@@ -7,4 +7,9 @@ export const ENV = {
   isProduction: process.env.NODE_ENV === "production",
   forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
   forgeApiKey: process.env.BUILT_IN_FORGE_API_KEY ?? "",
+  telebirrBaseUrl: process.env.TELEBIRR_BASE_URL ?? "",
+  telebirrAppId: process.env.TELEBIRR_APP_ID ?? "",
+  telebirrAppKey: process.env.TELEBIRR_APP_KEY ?? "",
+  telebirrPublicKey: process.env.TELEBIRR_PUBLIC_KEY ?? "",
+  telebirrCallbackSecret: process.env.TELEBIRR_CALLBACK_SECRET ?? "",
 };

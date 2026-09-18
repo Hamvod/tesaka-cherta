@@ -63,3 +63,33 @@ export type Auction = typeof auctions.$inferSelect;
 export type InsertAuction = typeof auctions.$inferInsert;
 export type Bid = typeof bids.$inferSelect;
 export type WatchlistItem = typeof watchlist.$inferSelect;
+
+export const paymentOrders = mysqlTable("payment_orders", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  auctionId: int("auctionId").notNull(),
+  provider: mysqlEnum("provider", ["telebirr"]).default("telebirr").notNull(),
+  merchantReference: varchar("merchantReference", { length: 120 }).notNull().unique(),
+  amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+  currency: varchar("currency", { length: 3 }).default("ETB").notNull(),
+  status: mysqlEnum("status", ["pending", "paid", "failed", "cancelled"]).default("pending").notNull(),
+  checkoutUrl: varchar("checkoutUrl", { length: 1000 }),
+  providerReference: varchar("providerReference", { length: 180 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export const paymentEvents = mysqlTable("payment_events", {
+  id: int("id").autoincrement().primaryKey(),
+  provider: mysqlEnum("provider", ["telebirr"]).default("telebirr").notNull(),
+  merchantReference: varchar("merchantReference", { length: 120 }).notNull(),
+  eventType: varchar("eventType", { length: 80 }).notNull(),
+  providerReference: varchar("providerReference", { length: 180 }),
+  payloadHash: varchar("payloadHash", { length: 128 }),
+  receivedAt: timestamp("receivedAt").defaultNow().notNull(),
+}, (table) => ({
+  idempotencyIndex: uniqueIndex("payment_event_idempotency").on(table.provider, table.merchantReference, table.eventType, table.providerReference),
+}));
+
+export type PaymentOrder = typeof paymentOrders.$inferSelect;
+export type PaymentEvent = typeof paymentEvents.$inferSelect;

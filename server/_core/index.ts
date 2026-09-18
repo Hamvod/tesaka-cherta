@@ -8,6 +8,7 @@ import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
+import { recordTelebirrPaymentEvent } from "../db";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -36,6 +37,22 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
   registerStorageProxy(app);
   registerOAuthRoutes(app);
+  app.post("/api/payments/telebirr/callback", async (req, res) => {
+    const merchantReference = typeof req.body?.merchantReference === "string" ? req.body.merchantReference : "";
+    const eventType = typeof req.body?.eventType === "string" ? req.body.eventType : "unknown";
+    const providerReference = typeof req.body?.providerReference === "string" ? req.body.providerReference : undefined;
+    if (!merchantReference) {
+      res.status(400).json({ accepted: false, error: "merchantReference is required" });
+      return;
+    }
+    try {
+      await recordTelebirrPaymentEvent({ merchantReference, eventType, providerReference });
+      res.status(202).json({ accepted: true, status: "pending_verification" });
+    } catch (error) {
+      console.error("[Telebirr] Callback event could not be recorded", error);
+      res.status(500).json({ accepted: false, error: "Unable to record payment event" });
+    }
+  });
   // tRPC API
   app.use(
     "/api/trpc",

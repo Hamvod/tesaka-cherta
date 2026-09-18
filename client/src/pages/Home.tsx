@@ -227,6 +227,7 @@ export default function Home() {
   const auctionQuery = trpc.auction.list.useQuery();
   const submitBidMutation = trpc.auction.submitBid.useMutation();
   const watchlistMutation = trpc.auction.toggleWatchlist.useMutation();
+  const preparePaymentMutation = trpc.payment.prepareTelebirr.useMutation();
   const [language, setLanguage] = useState<Language>("en");
   const [category, setCategory] = useState<Category>("All");
   const [query, setQuery] = useState("");
@@ -290,12 +291,19 @@ export default function Home() {
       toast.info("This preview auction is not connected to the database yet.");
       return;
     }
-    submitBidMutation.mutate({ auctionId: selectedAuction.dbId, amount: bidAmount }, {
-      onSuccess: () => {
-        toast.success(language === "am" ? "ጨረታዎ ተመዝግቧል።" : "Your bid has been recorded.", { description: `${selectedAuction.title} · ${bidAmount} ETB` });
-        setSelectedAuction(null);
+    preparePaymentMutation.mutate({ auctionId: selectedAuction.dbId }, {
+      onSuccess: (order) => {
+        if (!order.ready) {
+          toast.info(language === "am" ? "የTelebirr ነጋዴ መለያ ሲገናኝ ክፍያ ይከፈታል።" : "Telebirr checkout is pending merchant setup.", {
+            description: `Payment order ${order.merchantReference} is saved as pending.`,
+          });
+          return;
+        }
+        toast.info("Telebirr checkout is configured, but the provider handoff is not enabled in this environment yet.", {
+          description: `Payment order ${order.merchantReference} is waiting for provider confirmation.`,
+        });
       },
-      onError: (error) => toast.error(error.message || "Could not submit your bid"),
+      onError: (error) => toast.error(error.message || "Could not prepare Telebirr payment"),
     });
   };
 
@@ -365,7 +373,7 @@ export default function Home() {
 
       <footer className="site-footer"><div className="container footer-grid"><div><a href="#top" className="brand-lockup footer-brand"><BrandMark /><span><strong>Tesaka</strong><em>Cherta</em></span></a><p>Fair play, made local.<br />ግልጽ ጨረታ፣ ለሁሉም።</p></div><div><h4>Explore</h4><a href="#auctions">Live auctions</a><a href="#winners">Winners</a><a href="#how-it-works">How it works</a></div><div><h4>Trust</h4><a href="#faq">FAQ & rules</a><a href="#faq">Responsible play</a><a href="#faq">Contact support</a></div><div className="footer-note"><span className="footer-dot" /> Built for the next smart move.<small>© 2026 Tesaka Cherta · Addis Ababa, Ethiopia</small></div></div></footer>
 
-      {selectedAuction && <div className="modal-backdrop" onClick={() => setSelectedAuction(null)}><div className="auction-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedAuction(null)} aria-label="Close"><X size={19} /></button><div className="modal-image"><img src={selectedAuction.image} alt={selectedAuction.title} /></div><div className="modal-content"><span className="status-pill"><span className="status-dot" /> {t.livePill} · #{selectedAuction.code}</span><h2>{selectedAuction.title}</h2><p className="modal-seller"><ShieldCheck size={15} /> {selectedAuction.verified} · {t.seller}</p><div className="modal-rule"><div className="modal-rule-icon"><CheckCircle2 size={17} /></div><div><strong>Lowest unique bid</strong><span>The lowest amount submitted exactly once wins.</span></div></div><div className="modal-stats"><div><small>{t.closing}</small><strong>{selectedAuction.ends}</strong></div><div><small>{t.bidFee}</small><strong>{selectedAuction.fee} ETB</strong></div></div><label className="bid-label">{t.amount}<div className="bid-input-wrap"><input value={bidAmount} onChange={(event) => setBidAmount(event.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /><span>ETB</span></div></label><div className="modal-actions"><button className="primary-button btn-spring" onClick={handleBid} disabled={submitBidMutation.isPending}>{submitBidMutation.isPending ? "Submitting…" : t.submit} <ArrowUpRight size={16} /></button><button className="cancel-button" onClick={() => setSelectedAuction(null)}>{t.cancel}</button></div><small className="demo-note">{isAuthenticated ? "Your bid is saved to your account." : "Sign in is required before a bid can be saved."}</small></div></div></div>}
+      {selectedAuction && <div className="modal-backdrop" onClick={() => setSelectedAuction(null)}><div className="auction-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedAuction(null)} aria-label="Close"><X size={19} /></button><div className="modal-image"><img src={selectedAuction.image} alt={selectedAuction.title} /></div><div className="modal-content"><span className="status-pill"><span className="status-dot" /> {t.livePill} · #{selectedAuction.code}</span><h2>{selectedAuction.title}</h2><p className="modal-seller"><ShieldCheck size={15} /> {selectedAuction.verified} · {t.seller}</p><div className="modal-rule"><div className="modal-rule-icon"><CheckCircle2 size={17} /></div><div><strong>Lowest unique bid</strong><span>The lowest amount submitted exactly once wins.</span></div></div><div className="modal-stats"><div><small>{t.closing}</small><strong>{selectedAuction.ends}</strong></div><div><small>{t.bidFee}</small><strong>{selectedAuction.fee} ETB</strong></div></div><label className="bid-label">{t.amount}<div className="bid-input-wrap"><input value={bidAmount} onChange={(event) => setBidAmount(event.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /><span>ETB</span></div></label><div className="modal-actions"><button className="primary-button btn-spring" onClick={handleBid} disabled={submitBidMutation.isPending || preparePaymentMutation.isPending}>{preparePaymentMutation.isPending ? "Preparing Telebirr…" : submitBidMutation.isPending ? "Submitting…" : t.submit} <ArrowUpRight size={16} /></button><button className="cancel-button" onClick={() => setSelectedAuction(null)}>{t.cancel}</button></div><small className="demo-note">{isAuthenticated ? "A Telebirr payment order is created before the bid is accepted." : "Sign in is required before payment or a bid can be saved."}</small></div></div></div>}
     </div>
   );
 }

@@ -153,12 +153,15 @@ export async function listUserBids(userId: number) {
   }).from(bids).innerJoin(auctions, eq(bids.auctionId, auctions.id)).where(eq(bids.userId, userId)).orderBy(desc(bids.createdAt));
 }
 
-export async function createBid(userId: number, auctionId: number, amount: string) {
+export async function createBid(userId: number, auctionId: number, amount: string, paymentOrderId?: number) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   const auction = await getAuctionById(auctionId);
   if (!auction || auction.status !== "live") throw new Error("This auction is not live");
   if (auction.endsAt.getTime() <= Date.now()) throw new Error("This auction has ended");
+  if (!paymentOrderId) throw new Error("A verified Telebirr payment is required before bidding");
+  const payment = await db.select().from(paymentOrders).where(and(eq(paymentOrders.id, paymentOrderId), eq(paymentOrders.userId, userId), eq(paymentOrders.auctionId, auctionId))).limit(1);
+  if (!payment[0] || payment[0].status !== "paid") throw new Error("Telebirr payment has not been verified");
   const bid = await db.insert(bids).values({ userId, auctionId, amount });
   return { id: Number(bid[0].insertId), auctionId, amount };
 }
@@ -185,4 +188,70 @@ export async function listUserWatchlist(userId: number) {
     imagePath: auctions.imagePath,
     endsAt: auctions.endsAt,
   }).from(watchlist).innerJoin(auctions, eq(watchlist.auctionId, auctions.id)).where(eq(watchlist.userId, userId)).orderBy(desc(watchlist.createdAt));
+}
+
+import { nanoid } from "nanoid";
+import { paymentEvents, paymentOrders } from "../drizzle/schema";
+
+export async function createTelebirrPaymentOrder(userId: number, auctionId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const auction = await getAuctionById(auctionId);
+  if (!auction || auction.status !== "live") throw new Error("This auction is not live");
+  if (auction.endsAt.getTime() <= Date.now()) throw new Error("This auction has ended");
+
+  const existingPending = await db.select().from(paymentOrders).where(and(eq(paymentOrders.userId, userId), eq(paymentOrders.auctionId, auctionId), eq(paymentOrders.status, "pending"))).orderBy(desc(paymentOrders.createdAt)).limit(1);
+  if (existingPending[0]) {
+    return {
+      id: existingPending[0].id,
+      merchantReference: existingPending[0].merchantReference,
+      amount: existingPending[0].amount,
+      currency: existingPending[0].currency,
+      status: existingPending[0].status,
+      provider: existingPending[0].provider,
+      checkoutUrl: existingPending[0].checkoutUrl,
+      ready: false,
+    };
+  }
+
+  const merchantReference = `TC-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${nanoid(10).toUpperCase()}`;
+  const inserted = await db.insert(paymentOrders).values({
+    userId,
+    auctionId,
+    provider: "telebirr",
+    merchantReference,
+    amount: auction.bidFee,
+    currency: "ETB",
+    status: "pending",
+  });
+  return {
+    id: Number(inserted[0].insertId),
+    merchantReference,
+    amount: auction.bidFee,
+    currency: "ETB" as const,
+    status: "pending" as const,
+    provider: "telebirr" as const,
+    checkoutUrl: null,
+    ready: Boolean(ENV.telebirrBaseUrl && ENV.telebirrAppId && ENV.telebirrAppKey),
+  };
+}
+
+export async function getLatestUserPaymentOrder(userId: number, auctionId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const result = await db.select().from(paymentOrders).where(and(eq(paymentOrders.userId, userId), eq(paymentOrders.auctionId, auctionId))).orderBy(desc(paymentOrders.createdAt)).limit(1);
+  return result[0];
+}
+
+export async function recordTelebirrPaymentEvent(input: { merchantReference: string; eventType: string; providerReference?: string; payloadHash?: string }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(paymentEvents).values({
+    provider: "telebirr",
+    merchantReference: input.merchantReference,
+    eventType: input.eventType,
+    providerReference: input.providerReference ?? null,
+    payloadHash: input.payloadHash ?? null,
+  }).onDuplicateKeyUpdate({ set: { receivedAt: new Date() } });
+  return { accepted: true } as const;
 }
