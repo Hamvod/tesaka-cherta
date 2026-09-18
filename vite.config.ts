@@ -170,6 +170,13 @@ export default defineConfig({
   },
   server: {
     host: true,
+    // WebDev serves the dev server through an HTTPS reverse proxy. Tell the
+    // browser to use the public secure WebSocket endpoint instead of trying
+    // to connect directly to localhost:5173.
+    hmr: {
+      protocol: "wss",
+      clientPort: 443,
+    },
     allowedHosts: [
       ".manuspre.computer",
       ".manus.computer",
