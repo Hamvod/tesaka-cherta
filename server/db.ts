@@ -1,11 +1,50 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
-import { ENV } from './_core/env';
+import {
+  accountProfiles,
+  auctions,
+  bids,
+  InsertUser,
+  users,
+  watchlist,
+} from "../drizzle/schema";
+import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
-// Lazily create the drizzle instance so local tooling can run without a DB.
+const seedAuctions = [
+  {
+    slug: "a17-pro-256gb",
+    title: "A17 Pro · 256GB",
+    category: "Phones",
+    imagePath: "/manus-storage/tesaka_cherta_phone_74bf5de2.jpg",
+    sellerName: "Nile Mobile",
+    bidFee: "50.00",
+    endsAt: new Date("2026-09-26T17:00:00.000Z"),
+    status: "live" as const,
+  },
+  {
+    slug: "vision-55-4k-smart-tv",
+    title: "Vision 55 4K Smart TV",
+    category: "Home tech",
+    imagePath: "/manus-storage/tesaka_cherta_tv_503427d1.jpg",
+    sellerName: "Habesha Home",
+    bidFee: "45.00",
+    endsAt: new Date("2026-09-22T15:30:00.000Z"),
+    status: "live" as const,
+  },
+  {
+    slug: "soundarc-studio-anc",
+    title: "SoundArc Studio ANC",
+    category: "Audio",
+    imagePath: "/manus-storage/tesaka_cherta_headphones_dd2c6f2e.jpg",
+    sellerName: "Addis Audio",
+    bidFee: "35.00",
+    endsAt: new Date("2026-09-30T16:15:00.000Z"),
+    status: "live" as const,
+  },
+];
+
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
@@ -19,74 +58,131 @@ export async function getDb() {
 }
 
 export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
+  if (!user.openId) throw new Error("User openId is required for upsert");
   const db = await getDb();
   if (!db) {
     console.warn("[Database] Cannot upsert user: database not available");
     return;
   }
 
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
+  const values: InsertUser = { openId: user.openId };
+  const updateSet: Record<string, unknown> = {};
+  const textFields = ["name", "email", "loginMethod"] as const;
+  type TextField = (typeof textFields)[number];
 
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
+  for (const field of textFields) {
+    const value = user[field];
+    if (value !== undefined) {
+      values[field] = value ?? null;
+      updateSet[field] = value ?? null;
     }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
   }
+  if (user.lastSignedIn !== undefined) {
+    values.lastSignedIn = user.lastSignedIn;
+    updateSet.lastSignedIn = user.lastSignedIn;
+  }
+  if (user.role !== undefined) {
+    values.role = user.role;
+    updateSet.role = user.role;
+  } else if (user.openId === ENV.ownerOpenId) {
+    values.role = "admin";
+    updateSet.role = "admin";
+  }
+  if (!values.lastSignedIn) values.lastSignedIn = new Date();
+  if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
+
+  await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
 }
 
 export async function getUserByOpenId(openId: string) {
   const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
+  if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
+  return result[0];
 }
 
-// TODO: add feature queries here as your schema grows.
+async function ensureAuctionCatalog(db: NonNullable<Awaited<ReturnType<typeof getDb>>>) {
+  const existing = await db.select({ id: auctions.id }).from(auctions).limit(1);
+  if (existing.length === 0) await db.insert(auctions).values(seedAuctions);
+}
+
+export async function listLiveAuctions() {
+  const db = await getDb();
+  if (!db) return [];
+  await ensureAuctionCatalog(db);
+  return db.select().from(auctions).where(eq(auctions.status, "live")).orderBy(auctions.endsAt);
+}
+
+export async function getAuctionById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  await ensureAuctionCatalog(db);
+  const result = await db.select().from(auctions).where(eq(auctions.id, id)).limit(1);
+  return result[0];
+}
+
+export async function getOrCreateProfile(userId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+  const existing = await db.select().from(accountProfiles).where(eq(accountProfiles.userId, userId)).limit(1);
+  if (existing[0]) return existing[0];
+  await db.insert(accountProfiles).values({ userId });
+  const created = await db.select().from(accountProfiles).where(eq(accountProfiles.userId, userId)).limit(1);
+  return created[0];
+}
+
+export async function updateProfile(userId: number, values: { phone?: string | null; city?: string | null; language?: "en" | "am"; marketingOptIn?: number }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await getOrCreateProfile(userId);
+  await db.update(accountProfiles).set(values).where(eq(accountProfiles.userId, userId));
+  return getOrCreateProfile(userId);
+}
+
+export async function listUserBids(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({
+    id: bids.id,
+    amount: bids.amount,
+    createdAt: bids.createdAt,
+    auctionId: bids.auctionId,
+    auctionTitle: auctions.title,
+    auctionImagePath: auctions.imagePath,
+    auctionStatus: auctions.status,
+  }).from(bids).innerJoin(auctions, eq(bids.auctionId, auctions.id)).where(eq(bids.userId, userId)).orderBy(desc(bids.createdAt));
+}
+
+export async function createBid(userId: number, auctionId: number, amount: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const auction = await getAuctionById(auctionId);
+  if (!auction || auction.status !== "live") throw new Error("This auction is not live");
+  if (auction.endsAt.getTime() <= Date.now()) throw new Error("This auction has ended");
+  const bid = await db.insert(bids).values({ userId, auctionId, amount });
+  return { id: Number(bid[0].insertId), auctionId, amount };
+}
+
+export async function toggleWatchlist(userId: number, auctionId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const existing = await db.select().from(watchlist).where(and(eq(watchlist.userId, userId), eq(watchlist.auctionId, auctionId))).limit(1);
+  if (existing[0]) {
+    await db.delete(watchlist).where(eq(watchlist.id, existing[0].id));
+    return { saved: false } as const;
+  }
+  await db.insert(watchlist).values({ userId, auctionId });
+  return { saved: true } as const;
+}
+
+export async function listUserWatchlist(userId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({
+    id: watchlist.id,
+    auctionId: watchlist.auctionId,
+    title: auctions.title,
+    imagePath: auctions.imagePath,
+    endsAt: auctions.endsAt,
+  }).from(watchlist).innerJoin(auctions, eq(watchlist.auctionId, auctions.id)).where(eq(watchlist.userId, userId)).orderBy(desc(watchlist.createdAt));
+}

@@ -1,28 +1,57 @@
+import { z } from "zod";
 import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
-import { publicProcedure, router } from "./_core/trpc";
+import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { TRPCError } from "@trpc/server";
+import * as db from "./db";
+
+const profileInput = z.object({
+  phone: z.string().trim().max(32).nullable().optional(),
+  city: z.string().trim().max(120).nullable().optional(),
+  language: z.enum(["en", "am"]).optional(),
+  marketingOptIn: z.number().int().min(0).max(1).optional(),
+});
 
 export const appRouter = router({
-    // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
   system: systemRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
     logout: publicProcedure.mutation(({ ctx }) => {
       const cookieOptions = getSessionCookieOptions(ctx.req);
       ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return {
-        success: true,
-      } as const;
+      return { success: true } as const;
+    }),
+    account: protectedProcedure.query(async ({ ctx }) => {
+      const [profile, userBids, savedAuctions] = await Promise.all([
+        db.getOrCreateProfile(ctx.user.id),
+        db.listUserBids(ctx.user.id),
+        db.listUserWatchlist(ctx.user.id),
+      ]);
+      return { user: ctx.user, profile, bids: userBids, savedAuctions };
+    }),
+    updateProfile: protectedProcedure.input(profileInput).mutation(async ({ ctx, input }) => {
+      const profile = await db.updateProfile(ctx.user.id, input);
+      return { profile };
     }),
   }),
-
-  // TODO: add feature routers here, e.g.
-  // todo: router({
-  //   list: protectedProcedure.query(({ ctx }) =>
-  //     db.getUserTodos(ctx.user.id)
-  //   ),
-  // }),
+  auction: router({
+    list: publicProcedure.query(() => db.listLiveAuctions()),
+    byId: publicProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input }) => db.getAuctionById(input.id)),
+    submitBid: protectedProcedure.input(z.object({
+      auctionId: z.number().int().positive(),
+      amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "Enter a valid bid amount"),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        const amount = Number(input.amount);
+        if (!Number.isFinite(amount) || amount <= 0) throw new Error("Bid amount must be greater than zero");
+        return await db.createBid(ctx.user.id, input.auctionId, amount.toFixed(2));
+      } catch (error) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Unable to submit bid" });
+      }
+    }),
+    toggleWatchlist: protectedProcedure.input(z.object({ auctionId: z.number().int().positive() })).mutation(({ ctx, input }) => db.toggleWatchlist(ctx.user.id, input.auctionId)),
+  }),
 });
 
 export type AppRouter = typeof appRouter;

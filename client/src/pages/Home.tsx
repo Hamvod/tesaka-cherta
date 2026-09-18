@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { startLogin } from "@/const";
 import { useAuth } from "@/_core/hooks/useAuth";
+import { trpc } from "@/lib/trpc";
+import { useLocation } from "wouter";
 import {
   ArrowUpRight,
   Bell,
@@ -38,6 +39,7 @@ type Category = "All" | "Phones" | "Home tech" | "Audio";
 
 type Auction = {
   id: string;
+  dbId?: number;
   title: string;
   amTitle: string;
   category: Exclude<Category, "All">;
@@ -190,7 +192,7 @@ function BrandMark() {
   );
 }
 
-function AuctionCard({ auction, language, onOpen }: { auction: Auction; language: Language; onOpen: (auction: Auction) => void }) {
+function AuctionCard({ auction, language, onOpen, onSave }: { auction: Auction; language: Language; onOpen: (auction: Auction) => void; onSave: (auction: Auction) => void }) {
   const t = copy[language];
   return (
     <article className={`auction-card group ${auction.featured ? "auction-card-featured" : ""}`}>
@@ -200,7 +202,7 @@ function AuctionCard({ auction, language, onOpen }: { auction: Auction; language
           <span className="status-pill"><span className="status-dot" />{t.livePill}</span>
           {auction.featured && <span className="featured-pill"><Sparkles size={12} /> {t.featured}</span>}
         </div>
-        <button className="icon-button image-heart" aria-label={`Save ${auction.title}`} onClick={() => toast.success("Saved to your watchlist")}> <Heart size={16} /> </button>
+        <button className="icon-button image-heart" aria-label={`Save ${auction.title}`} onClick={() => onSave(auction)}> <Heart size={16} /> </button>
       </div>
       <div className="auction-card-body">
         <div className="auction-card-meta"><span>{auction.category}</span><span>#{auction.code}</span></div>
@@ -221,6 +223,10 @@ function AuctionCard({ auction, language, onOpen }: { auction: Auction; language
 
 export default function Home() {
   const { isAuthenticated, user } = useAuth();
+  const [, setLocation] = useLocation();
+  const auctionQuery = trpc.auction.list.useQuery();
+  const submitBidMutation = trpc.auction.submitBid.useMutation();
+  const watchlistMutation = trpc.auction.toggleWatchlist.useMutation();
   const [language, setLanguage] = useState<Language>("en");
   const [category, setCategory] = useState<Category>("All");
   const [query, setQuery] = useState("");
@@ -229,21 +235,68 @@ export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
   const t = copy[language];
 
+  const sourceAuctions = useMemo<Auction[]>(() => {
+    if (!auctionQuery.data?.length) return auctions;
+    return auctionQuery.data.map((auction, index) => ({
+      id: String(auction.id),
+      dbId: auction.id,
+      title: auction.title,
+      amTitle: auction.title,
+      category: auction.category as Exclude<Category, "All">,
+      image: auction.imagePath,
+      code: String(218 + index * 3),
+      time: `${Math.max(0, Math.ceil((auction.endsAt.getTime() - Date.now()) / 86400000))}d : live`,
+      ends: auction.endsAt.toLocaleString(),
+      fee: Number(auction.bidFee),
+      bids: 0,
+      verified: auction.sellerName,
+      accent: index === 0 ? "emerald" : index === 1 ? "amber" : "plum",
+      featured: index === 0,
+    }));
+  }, [auctionQuery.data]);
+
   const visibleAuctions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    return auctions.filter((auction) => {
+    return sourceAuctions.filter((auction) => {
       const matchesCategory = category === "All" || auction.category === category;
       const matchesQuery = !normalizedQuery || `${auction.title} ${auction.category} ${auction.verified}`.toLowerCase().includes(normalizedQuery);
       return matchesCategory && matchesQuery;
     });
-  }, [category, query]);
+  }, [category, query, sourceAuctions]);
+
+  const handleSave = (auction: Auction) => {
+    if (!isAuthenticated) {
+      setLocation("/signin");
+      return;
+    }
+    if (!auction.dbId) {
+      toast.info("This preview auction is not connected to the database yet.");
+      return;
+    }
+    watchlistMutation.mutate({ auctionId: auction.dbId }, {
+      onSuccess: (result) => toast.success(result.saved ? "Saved to your watchlist" : "Removed from your watchlist"),
+      onError: (error) => toast.error(error.message || "Could not update your watchlist"),
+    });
+  };
 
   const handleBid = () => {
     if (!selectedAuction) return;
-    toast.success(language === "am" ? "የሙከራ ጨረታዎ ተመዝግቧል።" : "Your demo bid has been recorded.", {
-      description: `${selectedAuction.title} · ${bidAmount} ETB`,
+    if (!isAuthenticated) {
+      setSelectedAuction(null);
+      setLocation("/signin");
+      return;
+    }
+    if (!selectedAuction.dbId) {
+      toast.info("This preview auction is not connected to the database yet.");
+      return;
+    }
+    submitBidMutation.mutate({ auctionId: selectedAuction.dbId, amount: bidAmount }, {
+      onSuccess: () => {
+        toast.success(language === "am" ? "ጨረታዎ ተመዝግቧል።" : "Your bid has been recorded.", { description: `${selectedAuction.title} · ${bidAmount} ETB` });
+        setSelectedAuction(null);
+      },
+      onError: (error) => toast.error(error.message || "Could not submit your bid"),
     });
-    setSelectedAuction(null);
   };
 
   const showHowItWorks = () => {
@@ -270,7 +323,7 @@ export default function Home() {
         <div className="header-actions">
           <button className="language-toggle" onClick={() => setLanguage(language === "en" ? "am" : "en")} aria-label="Toggle language"><Globe2 size={16} /><span>{language === "en" ? "EN" : "አማ"}</span><ChevronDown size={13} /></button>
           <button className="header-icon" aria-label="Notifications" onClick={() => toast.info("Notifications will appear here in the live product.")}><Bell size={17} /><i /></button>
-          {isAuthenticated ? <button className="profile-chip" onClick={() => toast.info(`Signed in as ${user?.name ?? "Tesaka member"}`)}><span>{(user?.name ?? "TC").slice(0, 1).toUpperCase()}</span>{user?.name ?? "Member"}</button> : <button className="signin-button" onClick={startLogin}>{t.signIn} <ArrowUpRight size={15} /></button>}
+          {isAuthenticated ? <button className="profile-chip" onClick={() => setLocation("/account")}><span>{(user?.name ?? "TC").slice(0, 1).toUpperCase()}</span>{user?.name ?? "Member"}</button> : <button className="signin-button" onClick={() => setLocation("/signin")}>{t.signIn} <ArrowUpRight size={15} /></button>}
           <button className="mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? <X size={21} /> : <Menu size={21} />}</button>
         </div>
       </header>
@@ -298,7 +351,7 @@ export default function Home() {
         <section id="auctions" className="auctions-section container">
           <div className="section-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> {t.live}</div><h2>Pick your next <em>smart move.</em></h2></div><button className="link-button" onClick={() => { setCategory("All"); setQuery(""); toast.info("Showing all live auctions"); }}>{t.viewAll} <ArrowUpRight size={15} /></button></div>
           <div className="auction-toolbar"><div className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={language === "am" ? "ምርት ይፈልጉ..." : "Search products, sellers..."} /></div><div className="category-pills"><Filter size={15} />{(["All", "Phones", "Home tech", "Audio"] as Category[]).map((item) => <button key={item} className={category === item ? "category-pill-active" : ""} onClick={() => setCategory(item)}>{item === "All" ? (language === "am" ? "ሁሉም" : "All") : item}</button>)}</div><button className="filter-button" onClick={() => toast.info("More filters are coming to the live marketplace.")}><SlidersHorizontal size={15} /> Filters</button></div>
-          <div className="auction-grid">{visibleAuctions.length ? visibleAuctions.map((auction) => <AuctionCard key={auction.id} auction={auction} language={language} onOpen={setSelectedAuction} />) : <div className="empty-state"><Search size={24} /><strong>No auctions found</strong><span>Try another search or category.</span></div>}</div>
+          <div className="auction-grid">{visibleAuctions.length ? visibleAuctions.map((auction) => <AuctionCard key={auction.id} auction={auction} language={language} onOpen={setSelectedAuction} onSave={handleSave} />) : <div className="empty-state"><Search size={24} /><strong>No auctions found</strong><span>Try another search or category.</span></div>}</div>
         </section>
 
         <section id="how-it-works" className="how-section">
@@ -312,7 +365,7 @@ export default function Home() {
 
       <footer className="site-footer"><div className="container footer-grid"><div><a href="#top" className="brand-lockup footer-brand"><BrandMark /><span><strong>Tesaka</strong><em>Cherta</em></span></a><p>Fair play, made local.<br />ግልጽ ጨረታ፣ ለሁሉም።</p></div><div><h4>Explore</h4><a href="#auctions">Live auctions</a><a href="#winners">Winners</a><a href="#how-it-works">How it works</a></div><div><h4>Trust</h4><a href="#faq">FAQ & rules</a><a href="#faq">Responsible play</a><a href="#faq">Contact support</a></div><div className="footer-note"><span className="footer-dot" /> Built for the next smart move.<small>© 2026 Tesaka Cherta · Addis Ababa, Ethiopia</small></div></div></footer>
 
-      {selectedAuction && <div className="modal-backdrop" onClick={() => setSelectedAuction(null)}><div className="auction-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedAuction(null)} aria-label="Close"><X size={19} /></button><div className="modal-image"><img src={selectedAuction.image} alt={selectedAuction.title} /></div><div className="modal-content"><span className="status-pill"><span className="status-dot" /> {t.livePill} · #{selectedAuction.code}</span><h2>{selectedAuction.title}</h2><p className="modal-seller"><ShieldCheck size={15} /> {selectedAuction.verified} · {t.seller}</p><div className="modal-rule"><div className="modal-rule-icon"><CheckCircle2 size={17} /></div><div><strong>Lowest unique bid</strong><span>The lowest amount submitted exactly once wins.</span></div></div><div className="modal-stats"><div><small>{t.closing}</small><strong>{selectedAuction.ends}</strong></div><div><small>{t.bidFee}</small><strong>{selectedAuction.fee} ETB</strong></div></div><label className="bid-label">{t.amount}<div className="bid-input-wrap"><input value={bidAmount} onChange={(event) => setBidAmount(event.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /><span>ETB</span></div></label><div className="modal-actions"><button className="primary-button btn-spring" onClick={handleBid}>{t.submit} <ArrowUpRight size={16} /></button><button className="cancel-button" onClick={() => setSelectedAuction(null)}>{t.cancel}</button></div><small className="demo-note">Demo mode · Your bid is not charged in this preview.</small></div></div></div>}
+      {selectedAuction && <div className="modal-backdrop" onClick={() => setSelectedAuction(null)}><div className="auction-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedAuction(null)} aria-label="Close"><X size={19} /></button><div className="modal-image"><img src={selectedAuction.image} alt={selectedAuction.title} /></div><div className="modal-content"><span className="status-pill"><span className="status-dot" /> {t.livePill} · #{selectedAuction.code}</span><h2>{selectedAuction.title}</h2><p className="modal-seller"><ShieldCheck size={15} /> {selectedAuction.verified} · {t.seller}</p><div className="modal-rule"><div className="modal-rule-icon"><CheckCircle2 size={17} /></div><div><strong>Lowest unique bid</strong><span>The lowest amount submitted exactly once wins.</span></div></div><div className="modal-stats"><div><small>{t.closing}</small><strong>{selectedAuction.ends}</strong></div><div><small>{t.bidFee}</small><strong>{selectedAuction.fee} ETB</strong></div></div><label className="bid-label">{t.amount}<div className="bid-input-wrap"><input value={bidAmount} onChange={(event) => setBidAmount(event.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /><span>ETB</span></div></label><div className="modal-actions"><button className="primary-button btn-spring" onClick={handleBid} disabled={submitBidMutation.isPending}>{submitBidMutation.isPending ? "Submitting…" : t.submit} <ArrowUpRight size={16} /></button><button className="cancel-button" onClick={() => setSelectedAuction(null)}>{t.cancel}</button></div><small className="demo-note">{isAuthenticated ? "Your bid is saved to your account." : "Sign in is required before a bid can be saved."}</small></div></div></div>}
     </div>
   );
 }
