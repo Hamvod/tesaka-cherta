@@ -1,57 +1,41 @@
 import { and, desc, eq } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/mysql2";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import {
   accountProfiles,
   auctions,
   bids,
   InsertUser,
+  paymentEvents,
+  paymentOrders,
   users,
   watchlist,
 } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 
 let _db: ReturnType<typeof drizzle> | null = null;
+let _client: ReturnType<typeof postgres> | null = null;
 
 const seedAuctions = [
-  {
-    slug: "a17-pro-256gb",
-    title: "A17 Pro · 256GB",
-    category: "Phones",
-    imagePath: "/manus-storage/tesaka_cherta_phone_74bf5de2.jpg",
-    sellerName: "Nile Mobile",
-    bidFee: "50.00",
-    endsAt: new Date("2026-09-26T17:00:00.000Z"),
-    status: "live" as const,
-  },
-  {
-    slug: "vision-55-4k-smart-tv",
-    title: "Vision 55 4K Smart TV",
-    category: "Home tech",
-    imagePath: "/manus-storage/tesaka_cherta_tv_503427d1.jpg",
-    sellerName: "Habesha Home",
-    bidFee: "45.00",
-    endsAt: new Date("2026-09-22T15:30:00.000Z"),
-    status: "live" as const,
-  },
-  {
-    slug: "soundarc-studio-anc",
-    title: "SoundArc Studio ANC",
-    category: "Audio",
-    imagePath: "/manus-storage/tesaka_cherta_headphones_dd2c6f2e.jpg",
-    sellerName: "Addis Audio",
-    bidFee: "35.00",
-    endsAt: new Date("2026-09-30T16:15:00.000Z"),
-    status: "live" as const,
-  },
+  { slug: "a17-pro-256gb", title: "A17 Pro · 256GB", category: "Phones", imagePath: "/manus-storage/tesaka_cherta_phone_74bf5de2.jpg", sellerName: "Nile Mobile", bidFee: "50.00", endsAt: new Date("2026-09-26T17:00:00.000Z"), status: "live" as const },
+  { slug: "vision-55-4k-smart-tv", title: "Vision 55 4K Smart TV", category: "Home tech", imagePath: "/manus-storage/tesaka_cherta_tv_503427d1.jpg", sellerName: "Habesha Home", bidFee: "45.00", endsAt: new Date("2026-09-22T15:30:00.000Z"), status: "live" as const },
+  { slug: "soundarc-studio-anc", title: "SoundArc Studio ANC", category: "Audio", imagePath: "/manus-storage/tesaka_cherta_headphones_dd2c6f2e.jpg", sellerName: "Addis Audio", bidFee: "35.00", endsAt: new Date("2026-09-30T16:15:00.000Z"), status: "live" as const },
 ];
 
 export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
+  if (!_db && ENV.databaseUrl) {
     try {
-      _db = drizzle(process.env.DATABASE_URL);
+      _client = postgres(ENV.databaseUrl, {
+        max: 1,
+        prepare: false,
+        connect_timeout: 10,
+        idle_timeout: 20,
+      });
+      _db = drizzle(_client);
     } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
+      console.warn("[Database] Failed to connect to Supabase Postgres:", error);
       _db = null;
+      _client = null;
     }
   }
   return _db;
@@ -91,7 +75,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   if (!values.lastSignedIn) values.lastSignedIn = new Date();
   if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
 
-  await db.insert(users).values(values).onDuplicateKeyUpdate({ set: updateSet });
+  await db.insert(users).values(values).onConflictDoUpdate({ target: users.openId, set: updateSet });
 }
 
 export async function getUserByOpenId(openId: string) {
@@ -126,8 +110,7 @@ export async function getOrCreateProfile(userId: number) {
   if (!db) return undefined;
   const existing = await db.select().from(accountProfiles).where(eq(accountProfiles.userId, userId)).limit(1);
   if (existing[0]) return existing[0];
-  await db.insert(accountProfiles).values({ userId });
-  const created = await db.select().from(accountProfiles).where(eq(accountProfiles.userId, userId)).limit(1);
+  const created = await db.insert(accountProfiles).values({ userId }).returning();
   return created[0];
 }
 
@@ -135,22 +118,14 @@ export async function updateProfile(userId: number, values: { phone?: string | n
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await getOrCreateProfile(userId);
-  await db.update(accountProfiles).set(values).where(eq(accountProfiles.userId, userId));
+  await db.update(accountProfiles).set({ ...values, updatedAt: new Date() }).where(eq(accountProfiles.userId, userId));
   return getOrCreateProfile(userId);
 }
 
 export async function listUserBids(userId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select({
-    id: bids.id,
-    amount: bids.amount,
-    createdAt: bids.createdAt,
-    auctionId: bids.auctionId,
-    auctionTitle: auctions.title,
-    auctionImagePath: auctions.imagePath,
-    auctionStatus: auctions.status,
-  }).from(bids).innerJoin(auctions, eq(bids.auctionId, auctions.id)).where(eq(bids.userId, userId)).orderBy(desc(bids.createdAt));
+  return db.select({ id: bids.id, amount: bids.amount, createdAt: bids.createdAt, auctionId: bids.auctionId, auctionTitle: auctions.title, auctionImagePath: auctions.imagePath, auctionStatus: auctions.status }).from(bids).innerJoin(auctions, eq(bids.auctionId, auctions.id)).where(eq(bids.userId, userId)).orderBy(desc(bids.createdAt));
 }
 
 export async function createBid(userId: number, auctionId: number, amount: string, paymentOrderId?: number) {
@@ -162,8 +137,8 @@ export async function createBid(userId: number, auctionId: number, amount: strin
   if (!paymentOrderId) throw new Error("A verified Telebirr payment is required before bidding");
   const payment = await db.select().from(paymentOrders).where(and(eq(paymentOrders.id, paymentOrderId), eq(paymentOrders.userId, userId), eq(paymentOrders.auctionId, auctionId))).limit(1);
   if (!payment[0] || payment[0].status !== "paid") throw new Error("Telebirr payment has not been verified");
-  const bid = await db.insert(bids).values({ userId, auctionId, amount });
-  return { id: Number(bid[0].insertId), auctionId, amount };
+  const created = await db.insert(bids).values({ userId, auctionId, amount }).returning({ id: bids.id });
+  return { id: created[0]?.id, auctionId, amount };
 }
 
 export async function toggleWatchlist(userId: number, auctionId: number) {
@@ -181,17 +156,8 @@ export async function toggleWatchlist(userId: number, auctionId: number) {
 export async function listUserWatchlist(userId: number) {
   const db = await getDb();
   if (!db) return [];
-  return db.select({
-    id: watchlist.id,
-    auctionId: watchlist.auctionId,
-    title: auctions.title,
-    imagePath: auctions.imagePath,
-    endsAt: auctions.endsAt,
-  }).from(watchlist).innerJoin(auctions, eq(watchlist.auctionId, auctions.id)).where(eq(watchlist.userId, userId)).orderBy(desc(watchlist.createdAt));
+  return db.select({ id: watchlist.id, auctionId: watchlist.auctionId, title: auctions.title, imagePath: auctions.imagePath, endsAt: auctions.endsAt }).from(watchlist).innerJoin(auctions, eq(watchlist.auctionId, auctions.id)).where(eq(watchlist.userId, userId)).orderBy(desc(watchlist.createdAt));
 }
-
-import { nanoid } from "nanoid";
-import { paymentEvents, paymentOrders } from "../drizzle/schema";
 
 export async function createTelebirrPaymentOrder(userId: number, auctionId: number) {
   const db = await getDb();
@@ -201,39 +167,12 @@ export async function createTelebirrPaymentOrder(userId: number, auctionId: numb
   if (auction.endsAt.getTime() <= Date.now()) throw new Error("This auction has ended");
 
   const existingPending = await db.select().from(paymentOrders).where(and(eq(paymentOrders.userId, userId), eq(paymentOrders.auctionId, auctionId), eq(paymentOrders.status, "pending"))).orderBy(desc(paymentOrders.createdAt)).limit(1);
-  if (existingPending[0]) {
-    return {
-      id: existingPending[0].id,
-      merchantReference: existingPending[0].merchantReference,
-      amount: existingPending[0].amount,
-      currency: existingPending[0].currency,
-      status: existingPending[0].status,
-      provider: existingPending[0].provider,
-      checkoutUrl: existingPending[0].checkoutUrl,
-      ready: false,
-    };
-  }
+  if (existingPending[0]) return { id: existingPending[0].id, merchantReference: existingPending[0].merchantReference, amount: existingPending[0].amount, currency: existingPending[0].currency, status: existingPending[0].status, provider: existingPending[0].provider, checkoutUrl: existingPending[0].checkoutUrl, ready: false };
 
+  const { nanoid } = await import("nanoid");
   const merchantReference = `TC-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${nanoid(10).toUpperCase()}`;
-  const inserted = await db.insert(paymentOrders).values({
-    userId,
-    auctionId,
-    provider: "telebirr",
-    merchantReference,
-    amount: auction.bidFee,
-    currency: "ETB",
-    status: "pending",
-  });
-  return {
-    id: Number(inserted[0].insertId),
-    merchantReference,
-    amount: auction.bidFee,
-    currency: "ETB" as const,
-    status: "pending" as const,
-    provider: "telebirr" as const,
-    checkoutUrl: null,
-    ready: Boolean(ENV.telebirrBaseUrl && ENV.telebirrAppId && ENV.telebirrAppKey),
-  };
+  const created = await db.insert(paymentOrders).values({ userId, auctionId, provider: "telebirr", merchantReference, amount: auction.bidFee, currency: "ETB", status: "pending" }).returning({ id: paymentOrders.id });
+  return { id: created[0]?.id, merchantReference, amount: auction.bidFee, currency: "ETB" as const, status: "pending" as const, provider: "telebirr" as const, checkoutUrl: null, ready: Boolean(ENV.telebirrBaseUrl && ENV.telebirrAppId && ENV.telebirrAppKey) };
 }
 
 export async function getLatestUserPaymentOrder(userId: number, auctionId: number) {
@@ -246,12 +185,6 @@ export async function getLatestUserPaymentOrder(userId: number, auctionId: numbe
 export async function recordTelebirrPaymentEvent(input: { merchantReference: string; eventType: string; providerReference?: string; payloadHash?: string }) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  await db.insert(paymentEvents).values({
-    provider: "telebirr",
-    merchantReference: input.merchantReference,
-    eventType: input.eventType,
-    providerReference: input.providerReference ?? null,
-    payloadHash: input.payloadHash ?? null,
-  }).onDuplicateKeyUpdate({ set: { receivedAt: new Date() } });
+  await db.insert(paymentEvents).values({ provider: "telebirr", merchantReference: input.merchantReference, eventType: input.eventType, providerReference: input.providerReference ?? null, payloadHash: input.payloadHash ?? null }).onConflictDoUpdate({ target: [paymentEvents.provider, paymentEvents.merchantReference, paymentEvents.eventType, paymentEvents.providerReference], set: { receivedAt: new Date() } });
   return { accepted: true } as const;
 }
