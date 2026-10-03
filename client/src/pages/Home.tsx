@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
+import { toggleSavedAuction } from "@/lib/firebaseData";
 import { useLocation } from "wouter";
 import {
   ArrowUpRight,
@@ -226,7 +227,6 @@ export default function Home() {
   const [, setLocation] = useLocation();
   const auctionQuery = trpc.auction.list.useQuery();
   const submitBidMutation = trpc.auction.submitBid.useMutation();
-  const watchlistMutation = trpc.auction.toggleWatchlist.useMutation();
   const preparePaymentMutation = trpc.payment.prepareTelebirr.useMutation();
   const [language, setLanguage] = useState<Language>("en");
   const [category, setCategory] = useState<Category>("All");
@@ -265,19 +265,25 @@ export default function Home() {
     });
   }, [category, query, sourceAuctions]);
 
-  const handleSave = (auction: Auction) => {
+  const handleSave = async (auction: Auction) => {
     if (!isAuthenticated) {
       setLocation("/signin");
       return;
     }
-    if (!auction.dbId) {
-      toast.info("This preview auction is not connected to the database yet.");
-      return;
+    if (!user) return;
+    const parsedEnd = new Date(auction.ends);
+    const endsAt = Number.isNaN(parsedEnd.getTime()) ? new Date(Date.now() + 24 * 60 * 60 * 1000) : parsedEnd;
+    try {
+      const saved = await toggleSavedAuction(user.uid, {
+        auctionId: auction.dbId ?? auction.id,
+        title: auction.title,
+        imagePath: auction.image,
+        endsAt,
+      });
+      toast.success(saved ? "Saved to your Firestore watchlist" : "Removed from your watchlist");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update your Firestore watchlist");
     }
-    watchlistMutation.mutate({ auctionId: auction.dbId }, {
-      onSuccess: (result) => toast.success(result.saved ? "Saved to your watchlist" : "Removed from your watchlist"),
-      onError: (error) => toast.error(error.message || "Could not update your watchlist"),
-    });
   };
 
   const handleBid = () => {

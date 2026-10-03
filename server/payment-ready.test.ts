@@ -10,7 +10,7 @@ function createContext(): TrpcContext {
     openId: "payment-test-user",
     email: "payer@example.com",
     name: "Payment Test User",
-    loginMethod: "manus",
+    loginMethod: "password",
     role: "user",
     createdAt: new Date(),
     updatedAt: new Date(),

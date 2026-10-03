@@ -1,39 +1,13 @@
 import { z } from "zod";
-import { COOKIE_NAME } from "@shared/const";
-import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { TRPCError } from "@trpc/server";
 import * as db from "./db";
 
-const profileInput = z.object({
-  phone: z.string().trim().max(32).nullable().optional(),
-  city: z.string().trim().max(120).nullable().optional(),
-  language: z.enum(["en", "am"]).optional(),
-  marketingOptIn: z.number().int().min(0).max(1).optional(),
-});
-
 export const appRouter = router({
   system: systemRouter,
   auth: router({
     me: publicProcedure.query(opts => opts.ctx.user),
-    logout: publicProcedure.mutation(({ ctx }) => {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-      return { success: true } as const;
-    }),
-    account: protectedProcedure.query(async ({ ctx }) => {
-      const [profile, userBids, savedAuctions] = await Promise.all([
-        db.getOrCreateProfile(ctx.user.id),
-        db.listUserBids(ctx.user.id),
-        db.listUserWatchlist(ctx.user.id),
-      ]);
-      return { user: ctx.user, profile, bids: userBids, savedAuctions };
-    }),
-    updateProfile: protectedProcedure.input(profileInput).mutation(async ({ ctx, input }) => {
-      const profile = await db.updateProfile(ctx.user.id, input);
-      return { profile };
-    }),
   }),
   auction: router({
     list: publicProcedure.query(() => db.listLiveAuctions()),

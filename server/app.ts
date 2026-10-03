@@ -1,6 +1,5 @@
 import express, { type Express } from "express";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./_core/oauth";
 import { registerStorageProxy } from "./_core/storageProxy";
 import { appRouter } from "./routers";
 import { createContext } from "./_core/context";
@@ -12,7 +11,6 @@ export function createApp(): Express {
   app.use(express.urlencoded({ limit: "5mb", extended: true }));
 
   registerStorageProxy(app);
-  registerOAuthRoutes(app);
 
   app.post("/api/payments/telebirr/callback", async (req, res) => {
     const merchantReference = typeof req.body?.merchantReference === "string" ? req.body.merchantReference : "";
