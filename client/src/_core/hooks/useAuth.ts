@@ -1,4 +1,4 @@
-import { onAuthStateChanged, signOut, type User as FirebaseUser } from "firebase/auth";
+import { getIdTokenResult, onIdTokenChanged, signOut, type User as FirebaseUser } from "firebase/auth";
 import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { auth } from "@/lib/firebase";
@@ -34,21 +34,46 @@ export function useAuth(options?: UseAuthOptions) {
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  useEffect(() => onAuthStateChanged(auth, (nextUser) => {
-    setFirebaseUser(nextUser);
-    setLoading(false);
-    setError(null);
-    if (nextUser) {
+  useEffect(() => {
+    let active = true;
+    let generation = 0;
+    const unsubscribe = onIdTokenChanged(auth, (nextUser) => {
+      const currentGeneration = ++generation;
+      setFirebaseUser(nextUser);
+      setLoading(true);
+      if (!nextUser) {
+        setIsAdmin(false);
+        setError(null);
+        setLoading(false);
+        return;
+      }
       void ensureUserDocument(nextUser).catch((profileError: unknown) => {
         console.error("[Firestore] Could not initialize the user profile", profileError);
       });
-    }
-  }, (authError) => {
-    setError(authError);
-    setFirebaseUser(null);
-    setLoading(false);
-  }), []);
+      void getIdTokenResult(nextUser).then((tokenResult) => {
+        if (!active || currentGeneration !== generation) return;
+        setIsAdmin(tokenResult.claims.admin === true);
+        setError(null);
+      }).catch((authError: unknown) => {
+        if (!active || currentGeneration !== generation) return;
+        setIsAdmin(false);
+        setError(authError instanceof Error ? authError : new Error("Could not read Firebase access claims"));
+      }).finally(() => {
+        if (active && currentGeneration === generation) setLoading(false);
+      });
+    }, (authError) => {
+      setError(authError);
+      setFirebaseUser(null);
+      setIsAdmin(false);
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   const user = toCurrentUser(firebaseUser);
   useEffect(() => {
@@ -65,6 +90,7 @@ export function useAuth(options?: UseAuthOptions) {
     user,
     loading,
     error,
+    isAdmin,
     isAuthenticated: Boolean(user),
     refresh: async () => auth.currentUser?.reload(),
     logout,

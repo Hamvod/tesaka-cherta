@@ -18,7 +18,7 @@ function numericUserId(uid: string): number {
   return (hash >>> 0) % 2_000_000_000 + 1;
 }
 
-function fallbackUser(uid: string, name: string, email: string | null, signInProvider: string | null): User {
+function fallbackUser(uid: string, name: string, email: string | null, signInProvider: string | null, isAdmin: boolean): User {
   const now = new Date();
   return {
     id: numericUserId(uid),
@@ -26,7 +26,7 @@ function fallbackUser(uid: string, name: string, email: string | null, signInPro
     name,
     email,
     loginMethod: signInProvider,
-    role: "user",
+    role: isAdmin ? "admin" : "user",
     createdAt: now,
     updatedAt: now,
     lastSignedIn: now,
@@ -60,14 +60,15 @@ class FirebaseAuthServer {
       "sign_in_provider" in firebaseClaims && typeof firebaseClaims.sign_in_provider === "string"
       ? firebaseClaims.sign_in_provider
       : "firebase";
-    const user = fallbackUser(uid, name, email, signInProvider);
+    const isAdmin = payload.admin === true;
+    const user = fallbackUser(uid, name, email, signInProvider, isAdmin);
 
     // Keep the existing transactional backend's relational identity row when a
     // database is configured. Firestore user data is managed directly by the client.
     try {
       await db.upsertUser({ openId: uid, name, email, loginMethod: signInProvider, lastSignedIn: new Date() });
       const persistedUser = await db.getUserByOpenId(uid);
-      if (persistedUser) return persistedUser;
+      if (persistedUser) return { ...persistedUser, role: isAdmin ? "admin" : "user" };
     } catch (error) {
       console.warn("[Firebase Auth] Could not sync Firebase identity to the optional SQL backend", error);
     }

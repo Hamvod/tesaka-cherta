@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { createUserWithEmailAndPassword, sendPasswordResetEmail, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { createUserWithEmailAndPassword, getIdTokenResult, sendPasswordResetEmail, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
 import { ArrowLeft, ArrowUpRight, CheckCircle2, Globe2, LockKeyhole, ShieldCheck, Sparkles } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -19,7 +19,7 @@ function authMessage(error: unknown): string {
 
 export default function Auth({ mode = "signin" }: { mode?: "signin" | "register" }) {
   const [, setLocation] = useLocation();
-  const { isAuthenticated, loading } = useAuth();
+  const { isAuthenticated, isAdmin, loading } = useAuth();
   const isRegister = mode === "register";
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -27,8 +27,8 @@ export default function Auth({ mode = "signin" }: { mode?: "signin" | "register"
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (!loading && isAuthenticated) setLocation("/account");
-  }, [loading, isAuthenticated, setLocation]);
+    if (!loading && isAuthenticated) setLocation(isAdmin ? "/admin" : "/account");
+  }, [loading, isAuthenticated, isAdmin, setLocation]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -39,11 +39,13 @@ export default function Auth({ mode = "signin" }: { mode?: "signin" | "register"
         await updateProfile(credential.user, { displayName: name.trim() });
         await ensureUserDocument(credential.user);
         toast.success("Your account is ready");
+        setLocation("/account");
       } else {
-        await signInWithEmailAndPassword(auth, email.trim(), password);
+        const credential = await signInWithEmailAndPassword(auth, email.trim(), password);
+        const tokenResult = await getIdTokenResult(credential.user);
         toast.success("Welcome back");
+        setLocation(tokenResult.claims.admin === true ? "/admin" : "/account");
       }
-      setLocation("/account");
     } catch (error) {
       toast.error(authMessage(error));
     } finally {

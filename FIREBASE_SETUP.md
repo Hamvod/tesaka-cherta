@@ -17,10 +17,14 @@ The web SDK configuration is intentionally hard-coded in `client/src/lib/firebas
 
 The Express/tRPC server validates bearer ID tokens against Google's published Firebase signing keys. The expected project ID defaults to `studio-7668403722-dc933`; set `FIREBASE_PROJECT_ID` only if deploying against a different Firebase project.
 
-## 3. Existing auction/payment services
+## 3. Seed an administrator
+
+The administrator page is `/admin`. Access is based on the signed Firebase custom claim `admin: true`, checked in both the client navigation and the server's verified ID token. To seed an account from a trusted machine, install dependencies and run `pnpm admin:seed` with `GOOGLE_APPLICATION_CREDENTIALS`, `ADMIN_SEED_EMAIL`, and `ADMIN_SEED_PASSWORD` set in the environment. The service-account JSON is read locally and must never be committed. After the claim is set, the user should sign in again (or refresh their ID token) so Firebase issues a token containing the new claim.
+
+## 4. Existing auction/payment services
 
 This migration removes Manus OAuth and moves **user profiles and saved auctions** to Firestore. The existing auction catalog, Telebirr payment order/callback, and payment-gated bid APIs remain on the repository's relational database because those server-side transactional flows still use Drizzle/PostgreSQL. Deployments that use those flows must retain `DATABASE_URL` (or `POSTGRES_URL` / `SUPABASE_DB_URL`). Bid-history documents are readable by their owner but the supplied Firestore rules intentionally deny browser writes; a trusted payment-verifying backend would need to write them.
 
-## 4. Local validation
+## 5. Local validation
 
 Install dependencies with `pnpm install`, then run `pnpm check`, `pnpm test`, and `pnpm build`.
