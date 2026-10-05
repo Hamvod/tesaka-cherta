@@ -29,11 +29,10 @@ You can also paste that SQL into the Supabase SQL Editor if you prefer a dashboa
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Supabase pooled PostgreSQL URL; use the pooler connection string for serverless deployments |
-| `JWT_SECRET` | Session cookie signing secret |
-| `VITE_APP_ID` | Manus OAuth application ID |
-| `OAUTH_SERVER_URL` | Manus OAuth server URL |
-| `VITE_OAUTH_PORTAL_URL` | Manus sign-in portal URL |
-| `OWNER_OPEN_ID` | Owner identity for admin role assignment |
+| `SUPABASE_URL` | Supabase project URL (e.g. `https://xxxx.supabase.co`) |
+| `SUPABASE_ANON_KEY` | Supabase public anon key (safe for the browser; also set as `VITE_SUPABASE_ANON_KEY`) |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key; server-only secret used to verify user JWTs |
+| `SUPABASE_ADMIN_EMAIL` | Email address granted the `admin` role in the app (e.g. the owner's Google account) |
 | `BUILT_IN_FORGE_API_URL` | Storage/notification/other server integration base URL |
 | `BUILT_IN_FORGE_API_KEY` | Server integration secret |
 | `TELEBIRR_BASE_URL` | Optional; add only after approved merchant API access |
@@ -42,17 +41,21 @@ You can also paste that SQL into the Supabase SQL Editor if you prefer a dashboa
 | `TELEBIRR_PUBLIC_KEY` | Optional callback verification key |
 | `TELEBIRR_CALLBACK_SECRET` | Optional callback verification secret |
 
+Client build variables (Vite): `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. If your Vercel/Supabase integration instead exposes `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` (or the newer `*_SUPABASE_PUBLISHABLE_KEY` names), those work too — `vite.config.ts` exposes both prefixes and the code accepts either name pair. Server-side, `SUPABASE_SECRET_KEY` is accepted as an alias for `SUPABASE_SERVICE_ROLE_KEY`.
+
 The code also recognizes `POSTGRES_URL` and `SUPABASE_DB_URL` as fallbacks if the Vercel Supabase integration creates one of those names. Prefer renaming or duplicating the pooled URL as `DATABASE_URL` for clarity.
 
-## 4. OAuth callback URL
+## 4. Supabase Auth (Google sign-in)
 
-After Vercel assigns a production domain, add this callback URL to the Manus OAuth application:
+Authentication is handled entirely by **Supabase Auth** — there is no separate OAuth server.
 
-```text
-https://YOUR_VERCEL_DOMAIN/api/oauth/callback
-```
+1. In the Supabase dashboard go to **Authentication → Providers** and enable **Google**.
+2. Create a Google Cloud OAuth client as instructed by Supabase, then paste the Client ID and Client Secret into the provider settings.
+3. Add the Supabase-issued callback URL (`https://<project-ref>.supabase.co/auth/v1/callback`) to the Google OAuth client's authorized redirect URIs.
+4. In Supabase **Authentication → URL Configuration**, add your production domain (the Vercel domain) and `http://localhost:3000` for local development to the allowed redirect URLs.
+5. The app sends users to `signInWithOAuth({ provider: "google" })`; Supabase returns them to `{origin}/account`. The browser stores the session; every API call forwards the access token as a `Bearer` header, and the server verifies it with the service-role client.
 
-For a preview deployment, add the preview callback URL only if the OAuth provider permits it and the preview environment has the required secrets.
+Admin role: the server grants the `admin` role to the Supabase account whose email matches `SUPABASE_ADMIN_EMAIL`. There is no hard-coded password; configure a strong password for that account in Google/Supabase as you normally would.
 
 ## 5. Telebirr callback URL
 

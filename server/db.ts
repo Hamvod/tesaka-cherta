@@ -68,14 +68,32 @@ export async function upsertUser(user: InsertUser): Promise<void> {
   if (user.role !== undefined) {
     values.role = user.role;
     updateSet.role = user.role;
-  } else if (user.openId === ENV.ownerOpenId) {
-    values.role = "admin";
-    updateSet.role = "admin";
   }
   if (!values.lastSignedIn) values.lastSignedIn = new Date();
   if (Object.keys(updateSet).length === 0) updateSet.lastSignedIn = new Date();
 
   await db.insert(users).values(values).onConflictDoUpdate({ target: users.openId, set: updateSet });
+}
+
+export async function syncSupabaseUser(input: {
+  supabaseId: string;
+  email: string | null;
+  name: string | null;
+  loginMethod?: string;
+}): Promise<NonNullable<Awaited<ReturnType<typeof getUserByOpenId>>> | undefined> {
+  const role =
+    input.email && ENV.supabaseAdminEmail && input.email.toLowerCase() === ENV.supabaseAdminEmail.trim().toLowerCase()
+      ? "admin"
+      : "user";
+  await upsertUser({
+    openId: input.supabaseId,
+    name: input.name,
+    email: input.email,
+    loginMethod: input.loginMethod ?? "google",
+    role,
+    lastSignedIn: new Date(),
+  });
+  return getUserByOpenId(input.supabaseId);
 }
 
 export async function getUserByOpenId(openId: string) {

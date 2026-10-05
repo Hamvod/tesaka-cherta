@@ -154,6 +154,9 @@ const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(
 
 export default defineConfig({
   plugins,
+  // Vercel/Supabase expose browser-safe values as either VITE_* or
+  // NEXT_PUBLIC_*, so expose both prefixes to the client build.
+  envPrefix: ["VITE_", "NEXT_PUBLIC_"],
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "client", "src"),
