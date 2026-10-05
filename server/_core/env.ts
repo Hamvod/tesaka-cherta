@@ -9,4 +9,5 @@ export const ENV = {
   telebirrAppKey: process.env.TELEBIRR_APP_KEY ?? "",
   telebirrPublicKey: process.env.TELEBIRR_PUBLIC_KEY ?? "",
   telebirrCallbackSecret: process.env.TELEBIRR_CALLBACK_SECRET ?? "",
+  enableTestPayments: process.env.ENABLE_TEST_PAYMENTS === "true" && !(process.env.VERCEL_ENV === "production" || (!process.env.VERCEL_ENV && process.env.NODE_ENV === "production")),
 };

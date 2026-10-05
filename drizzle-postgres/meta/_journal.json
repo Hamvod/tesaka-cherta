@@ -8,6 +8,20 @@
       "when": 1789827289078,
       "tag": "0000_little_sentry",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1791021252860,
+      "tag": "0001_low_sue_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791021296438,
+      "tag": "0002_large_domino",
+      "breakpoints": true
     }
   ]
 }

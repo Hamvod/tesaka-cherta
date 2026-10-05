@@ -1,30 +1,53 @@
-# Firebase setup for Tesaka Cherta
+# Tesaka Cherta: Firebase and auction operations
 
-The browser app now uses the supplied Firebase project for **Firebase Authentication** and **Cloud Firestore**. Firebase Auth handles email/password registration, sign-in, password resets, and sign-out. User profiles and saved-auction lists are stored in Firestore at `users/{uid}` and `users/{uid}/watchlist/{auctionId}`. The API verifies Firebase ID tokens before allowing protected tRPC procedures.
+## Authentication and profile data
 
-## 1. Enable Firebase services
+The web app uses Firebase project `studio-7668403722-dc933` for Firebase email/password Authentication and Cloud Firestore. The browser Firebase configuration is intentionally hard-coded in `client/src/lib/firebase.ts`, as requested. Firebase web API keys identify the public project; Firebase Auth and the Firestore rules are the security boundary.
 
-In Firebase Console for project `studio-7668403722-dc933`:
+The client stores user profile preferences and saved-auction entries in Firestore at `users/{uid}` and `users/{uid}/watchlist/{auctionId}`. Deploy `firestore.rules` and add the production and preview hosts under Firebase Authentication → Settings → Authorized domains.
 
-1. Open **Authentication → Sign-in method** and enable **Email/Password**.
-2. Open **Firestore Database** and create a database in the location appropriate for your users.
-3. Deploy the repository's `firestore.rules` from **Firestore Database → Rules**, or run `firebase deploy --only firestore:rules` after signing in to the Firebase CLI.
-4. Add your deployed site's host under **Authentication → Settings → Authorized domains**.
+The Express/tRPC API verifies Firebase ID tokens against Google's signing keys and the expected Firebase project ID. Set `FIREBASE_PROJECT_ID` only when deploying to a different Firebase project. Admin access is determined from the signed `admin: true` custom claim, not a client-editable profile field. `/signin` handles sign-in; successful administrators are directed to `/admin`, and regular users to `/account`.
 
-The web SDK configuration is intentionally hard-coded in `client/src/lib/firebase.ts`, as requested. Firebase web API keys are public project identifiers; Firestore rules and Authentication are the access controls.
+## Data and migration
 
-## 2. Server-side Firebase token verification
+Transactional auction data remains in PostgreSQL/Drizzle: auction inventory, bids, payment orders, results, and audit logs. Firebase Auth/Firestore do not replace this trusted transaction store. Configure one of `DATABASE_URL`, `POSTGRES_URL`, or `SUPABASE_DB_URL` for the server.
 
-The Express/tRPC server validates bearer ID tokens against Google's published Firebase signing keys. The expected project ID defaults to `studio-7668403722-dc933`; set `FIREBASE_PROJECT_ID` only if deploying against a different Firebase project.
+The additive SQL migrations are checked into `drizzle-postgres/`. Apply them once to the configured database using:
 
-## 3. Seed an administrator
+```sh
+pnpm install
+pnpm db:migrate
+```
 
-The administrator page is `/admin`. Access is based on the signed Firebase custom claim `admin: true`, checked in both the client navigation and the server's verified ID token. To seed an account from a trusted machine, install dependencies and run `pnpm admin:seed` with `GOOGLE_APPLICATION_CREDENTIALS`, `ADMIN_SEED_EMAIL`, and `ADMIN_SEED_PASSWORD` set in the environment. The service-account JSON is read locally and must never be committed. After the claim is set, the user should sign in again (or refresh their ID token) so Firebase issues a token containing the new claim.
+The auction migration adds start times and bid constraints, payment-linked bid records, auction results, audit logs, and the unique payment-order-per-bid constraint. A follow-up adds the sandbox payment provider. **Migrations have not been applied from this workspace** because no database connection string is configured here.
 
-## 4. Existing auction/payment services
+## Implemented bidder and admin workflows
 
-This migration removes Manus OAuth and moves **user profiles and saved auctions** to Firestore. The existing auction catalog, Telebirr payment order/callback, and payment-gated bid APIs remain on the repository's relational database because those server-side transactional flows still use Drizzle/PostgreSQL. Deployments that use those flows must retain `DATABASE_URL` (or `POSTGRES_URL` / `SUPABASE_DB_URL`). Bid-history documents are readable by their owner but the supplied Firestore rules intentionally deny browser writes; a trusted payment-verifying backend would need to write them.
+- **Bidder:** browse published live/upcoming auctions, inspect rules and limits, save an auction, prepare a payment order, submit a server-validated bid, see bid history and wins, and update their profile/language.
+- **Admin:** `/admin` provides overview counts, draft auction creation, publication and close/result calculation, read-only user and payment views, and audit logs. All admin APIs require the verified Firebase admin claim.
+- **Auction close/result:** valid bids are evaluated on the server using exact cents. The lowest amount submitted exactly once wins; results and SHA-256 bid-set hashes are stored with a reference and audit record. Expired auctions are finalized when auction/results/admin data is requested; an admin can also close early after an explicit in-app confirmation.
+- In development, the catalog may add demo listings if the database is empty. It does not auto-seed listings in production.
 
-## 5. Local validation
+## Payment safety and launch blockers
 
-Install dependencies with `pnpm install`, then run `pnpm check`, `pnpm test`, and `pnpm build`.
+Real Telebirr checkout and provider-side transaction/signature verification are **not implemented**. A Telebirr callback is accepted only with the configured `TELEBIRR_CALLBACK_SECRET` header, and callback payloads are recorded as pending events; a callback cannot mark an order paid or activate a bid. A pending order is not a paid bid.
+
+For non-production end-to-end testing only, set `ENABLE_TEST_PAYMENTS=true`. This enables explicit sandbox orders, which the application marks paid only through the authenticated sandbox procedure. The flag is forcibly disabled in production deployments. Sandbox settlement takes no real money.
+
+Do not launch paid bids or prizes until the authorized provider flow, idempotent server-side verification, reconciliation/refunds, consumer protections, and applicable Ethiopian legal, tax, licensing, and payment requirements have been reviewed and completed.
+
+## Admin account seeding
+
+`pnpm admin:seed` uses the Firebase Admin SDK to create/update an account and assign the `admin: true` custom claim. Run it only from a trusted environment with `GOOGLE_APPLICATION_CREDENTIALS`, `ADMIN_SEED_EMAIL`, and `ADMIN_SEED_PASSWORD` supplied securely. Never commit service-account keys or plaintext passwords. After setting the claim, refresh the user's Firebase ID token or sign in again.
+
+## Deliberately not included in this initial portal
+
+Separate seller/owner accounts and verification, device/session management, notifications, reports/complaints, account suspension, category/settings management, full English/Amharic localization of every screen, and 2FA/rate-limiting/fraud tooling still require further work. The current admin creates auctions directly; seller names are display text, not verified accounts. Do not interpret this MVP as production-ready for paid auctions.
+
+## Validation
+
+```sh
+pnpm check
+pnpm test
+pnpm build
+```
