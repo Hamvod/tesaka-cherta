@@ -1,20 +1,7 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { ENV } from "./env.js";
-
-let _admin: SupabaseClient | null = null;
 
 export function isSupabaseConfigured(): boolean {
   return Boolean(ENV.supabaseUrl && ENV.supabaseServiceRoleKey);
-}
-
-function getSupabaseAdmin(): SupabaseClient | null {
-  if (!isSupabaseConfigured()) return null;
-  if (!_admin) {
-    _admin = createClient(ENV.supabaseUrl, ENV.supabaseServiceRoleKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-  }
-  return _admin;
 }
 
 export type SupabaseAccount = {
@@ -23,27 +10,49 @@ export type SupabaseAccount = {
   name: string | null;
 };
 
+type SupabaseUserResponse = {
+  id?: unknown;
+  email?: unknown;
+  user_metadata?: Record<string, unknown>;
+};
+
+function readName(metadata: Record<string, unknown> | undefined, email: string | null): string | null {
+  const meta = metadata ?? {};
+  const candidates = [meta.full_name, meta.name, meta.preferred_username];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) return candidate.trim();
+  }
+  return null;
+}
+
 /**
- * Verify a Supabase access token (JWT) and return the account it belongs to.
- * Returns null when Supabase is unconfigured or the token is not a valid
- * Supabase session, which lets the caller fall back to Firebase.
+ * Verify a Supabase access token against the project's Auth service by calling
+ * GET /auth/v1/user. Returns null when Supabase is unconfigured or the token is
+ * not a valid Supabase session, which lets the caller fall back to Firebase.
  */
 export async function getSupabaseAccount(
   accessToken: string
 ): Promise<SupabaseAccount | null> {
-  const sb = getSupabaseAdmin();
-  if (!sb) return null;
+  if (!isSupabaseConfigured() || !accessToken) return null;
+
   try {
-    const { data, error } = await sb.auth.getUser(accessToken);
-    if (error || !data.user) return null;
-    const meta = data.user.user_metadata ?? {};
-    const name =
-      typeof meta.full_name === "string" && meta.full_name.trim().length > 0
-        ? meta.full_name
-        : typeof meta.name === "string" && meta.name.trim().length > 0
-          ? meta.name
-          : null;
-    return { id: data.user.id, email: data.user.email ?? null, name };
+    const response = await fetch(`${ENV.supabaseUrl.replace(/\/+$/, "")}/auth/v1/user`, {
+      method: "GET",
+      headers: {
+        apikey: ENV.supabaseServiceRoleKey,
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    // 401/403 means the token is not a valid Supabase session -> fall back.
+    if (!response.ok) return null;
+
+    const payload = (await response.json()) as SupabaseUserResponse;
+    const id = typeof payload.id === "string" ? payload.id : "";
+    if (!id) return null;
+
+    const email = typeof payload.email === "string" ? payload.email.toLowerCase() : null;
+    return { id, email, name: readName(payload.user_metadata, email) };
   } catch {
     return null;
   }
