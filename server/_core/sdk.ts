@@ -1,7 +1,7 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { Request } from "express";
-import type { User } from "../../drizzle/schema";
-import * as db from "../db";
+import type { User } from "../../drizzle/schema.js";
+import * as db from "../db.js";
 
 const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID ?? "studio-7668403722-dc933";
 const FIREBASE_ISSUER = `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`;

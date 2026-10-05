@@ -14,9 +14,9 @@ import {
   reports,
   users,
   watchlist,
-} from "../drizzle/schema";
-import { ENV } from "./_core/env";
-import { calculateLowestUniqueBid, maskPhone } from "./auction-engine";
+} from "../drizzle/schema.js";
+import { ENV } from "./_core/env.js";
+import { calculateLowestUniqueBid, maskPhone } from "./auction-engine.js";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 let _client: ReturnType<typeof postgres> | null = null;

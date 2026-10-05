@@ -1,9 +1,9 @@
 import { z } from "zod";
-import { systemRouter } from "./_core/systemRouter";
-import { adminProcedure, publicProcedure, protectedProcedure, router } from "./_core/trpc";
+import { systemRouter } from "./_core/systemRouter.js";
+import { adminProcedure, publicProcedure, protectedProcedure, router } from "./_core/trpc.js";
 import { TRPCError } from "@trpc/server";
-import * as db from "./db";
-import { ENV } from "./_core/env";
+import * as db from "./db.js";
+import { ENV } from "./_core/env.js";
 
 const amountPattern = /^\d+(\.\d{1,2})?$/;
 const amountField = z.string().regex(amountPattern, "Enter a valid amount with up to two decimal places");

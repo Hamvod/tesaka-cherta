@@ -1,11 +1,11 @@
 import express, { type Express } from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerStorageProxy } from "./_core/storageProxy";
-import { ENV } from "./_core/env";
-import { appRouter } from "./routers";
-import { createContext } from "./_core/context";
-import { recordTelebirrPaymentEvent } from "./db";
+import { registerStorageProxy } from "./_core/storageProxy.js";
+import { ENV } from "./_core/env.js";
+import { appRouter } from "./routers.js";
+import { createContext } from "./_core/context.js";
+import { recordTelebirrPaymentEvent } from "./db.js";
 
 export function createApp(): Express {
   const app = express();
