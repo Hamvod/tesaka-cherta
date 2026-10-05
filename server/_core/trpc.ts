@@ -1,7 +1,7 @@
-import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from '@shared/const';
+import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "../../shared/const.js";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
-import type { TrpcContext } from "./context";
+import type { TrpcContext } from "./context.js";
 
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
@@ -15,6 +15,9 @@ const requireUser = t.middleware(async opts => {
 
   if (!ctx.user) {
     throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+  if (ctx.user.status === "suspended") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "This account is suspended. Contact support for assistance." });
   }
 
   return next({
@@ -31,7 +34,13 @@ export const adminProcedure = t.procedure.use(
   t.middleware(async opts => {
     const { ctx, next } = opts;
 
-    if (!ctx.user || ctx.user.role !== 'admin') {
+    if (!ctx.user) {
+      throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    }
+    if (ctx.user.status === "suspended") {
+      throw new TRPCError({ code: "FORBIDDEN", message: "This account is suspended. Contact support for assistance." });
+    }
+    if (ctx.user.role !== 'admin') {
       throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
     }
 

@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
+import { toggleSavedAuction } from "@/lib/firebaseData";
 import { useLocation } from "wouter";
 import {
   ArrowUpRight,
@@ -18,6 +19,7 @@ import {
   LockKeyhole,
   Menu,
   MessageCircle,
+  RefreshCw,
   Search,
   ShieldCheck,
   SlidersHorizontal,
@@ -27,12 +29,6 @@ import {
   X,
   Zap,
 } from "lucide-react";
-
-const productImages = {
-  phone: "/manus-storage/tesaka_cherta_phone_74bf5de2.jpg",
-  tv: "/manus-storage/tesaka_cherta_tv_503427d1.jpg",
-  headphones: "/manus-storage/tesaka_cherta_headphones_dd2c6f2e.jpg",
-};
 
 type Language = "en" | "am";
 type Category = "All" | "Phones" | "Home tech" | "Audio";
@@ -49,56 +45,14 @@ type Auction = {
   ends: string;
   fee: number;
   bids: number;
-  verified: string;
+  minBid: number;
+  maxBid: number;
+  startsAt: Date;
+  status: "live" | "upcoming";
+  sellerName: string;
   accent: string;
   featured?: boolean;
 };
-
-const auctions: Auction[] = [
-  {
-    id: "a17",
-    title: "A17 Pro · 256GB",
-    amTitle: "A17 Pro · 256GB",
-    category: "Phones",
-    image: productImages.phone,
-    code: "218",
-    time: "08d : 04h : 52m",
-    ends: "Sat, Sep 26 · 8:00 PM",
-    fee: 50,
-    bids: 798,
-    verified: "Nile Mobile",
-    accent: "emerald",
-    featured: true,
-  },
-  {
-    id: "vision",
-    title: "Vision 55 4K Smart TV",
-    amTitle: "Vision 55 4K Smart TV",
-    category: "Home tech",
-    image: productImages.tv,
-    code: "221",
-    time: "03d : 12h : 09m",
-    ends: "Tue, Sep 22 · 6:30 PM",
-    fee: 45,
-    bids: 432,
-    verified: "Habesha Home",
-    accent: "amber",
-  },
-  {
-    id: "sound",
-    title: "SoundArc Studio ANC",
-    amTitle: "SoundArc Studio ANC",
-    category: "Audio",
-    image: productImages.headphones,
-    code: "224",
-    time: "11d : 19h : 31m",
-    ends: "Wed, Sep 30 · 7:15 PM",
-    fee: 35,
-    bids: 198,
-    verified: "Addis Audio",
-    accent: "plum",
-  },
-];
 
 const copy = {
   en: {
@@ -112,7 +66,7 @@ const copy = {
     explore: "Explore live auctions",
     how: "See how it works",
     trust: "Built for trust",
-    trustBody: "Verified products, clear rules, and results you can understand.",
+    trustBody: "Product details, clear rules, and results you can verify.",
     live: "Live now",
     ending: "Ending soon",
     featured: "Featured auction",
@@ -122,7 +76,7 @@ const copy = {
     livePill: "LIVE",
     viewAuction: "View auction",
     bidFee: "Bid fee",
-    participants: "participants",
+    participants: "bids",
     transparent: "Transparent by design",
     transparentBody:
       "Every Cherta auction follows the same simple rule: the lowest amount submitted exactly once wins.",
@@ -136,9 +90,10 @@ const copy = {
     faqBody: "Start with the basics, then bid with confidence.",
     openFaq: "Open the FAQ",
     closing: "Closing",
-    seller: "Verified seller",
+    opens: "Opens",
+    seller: "Seller",
     amount: "Enter your bid amount",
-    submit: "Submit demo bid",
+    submit: "Submit bid",
     cancel: "Cancel",
   },
   am: {
@@ -152,7 +107,7 @@ const copy = {
     explore: "ቀጥታ ጨረታዎችን ይመልከቱ",
     how: "እንዴት እንደሚሰራ ይመልከቱ",
     trust: "ለእምነት የተሰራ",
-    trustBody: "የተረጋገጡ ምርቶች፣ ግልጽ ህጎች፣ ቀላል ውጤቶች።",
+    trustBody: "የምርት ዝርዝር፣ ግልጽ ህጎች፣ ሊረጋገጡ የሚችሉ ውጤቶች።",
     live: "አሁን በቀጥታ",
     ending: "በቅርቡ ይዘጋል",
     featured: "የተመረጠ ጨረታ",
@@ -162,7 +117,7 @@ const copy = {
     livePill: "ቀጥታ",
     viewAuction: "ጨረታውን ይመልከቱ",
     bidFee: "የጨረታ ክፍያ",
-    participants: "ተሳታፊዎች",
+    participants: "ጨረታዎች",
     transparent: "በንድፍ ግልጽ",
     transparentBody: "በእያንዳንዱ ጨረታ ትክክለኛው አንድ ጊዜ የቀረበ ዝቅተኛ መጠን ያሸንፋል።",
     step1: "ጨረታዎን ይምረጡ",
@@ -175,9 +130,10 @@ const copy = {
     faqBody: "መሰረቱን ይማሩ፣ በእምነትም ይጫረቱ።",
     openFaq: "FAQ ይክፈቱ",
     closing: "የሚዘጋው",
-    seller: "የተረጋገጠ ሻጭ",
+    opens: "የሚጀምር",
+    seller: "ሻጭ",
     amount: "የጨረታ መጠን ያስገቡ",
-    submit: "የሙከራ ጨረታ ያቅርቡ",
+    submit: "ጨረታ ያቅርቡ",
     cancel: "ይቅር",
   },
 } as const;
@@ -199,7 +155,7 @@ function AuctionCard({ auction, language, onOpen, onSave }: { auction: Auction; 
       <div className="auction-card-media">
         <img src={auction.image} alt={auction.title} />
         <div className="auction-card-topline">
-          <span className="status-pill"><span className="status-dot" />{t.livePill}</span>
+          <span className="status-pill"><span className="status-dot" />{auction.status === "upcoming" ? "UPCOMING" : t.livePill}</span>
           {auction.featured && <span className="featured-pill"><Sparkles size={12} /> {t.featured}</span>}
         </div>
         <button className="icon-button image-heart" aria-label={`Save ${auction.title}`} onClick={() => onSave(auction)}> <Heart size={16} /> </button>
@@ -207,9 +163,9 @@ function AuctionCard({ auction, language, onOpen, onSave }: { auction: Auction; 
       <div className="auction-card-body">
         <div className="auction-card-meta"><span>{auction.category}</span><span>#{auction.code}</span></div>
         <h3>{language === "am" ? auction.amTitle : auction.title}</h3>
-        <p className="seller-line"><ShieldCheck size={14} /> {auction.verified} · {t.seller}</p>
+        <p className="seller-line"><ShieldCheck size={14} /> {auction.sellerName} · {t.seller}</p>
         <div className="auction-card-stats">
-          <div><span>{t.closing}</span><strong><Clock3 size={14} /> {auction.time}</strong></div>
+          <div><span>{auction.status === "live" ? t.closing : t.opens}</span><strong><Clock3 size={14} /> {auction.time}</strong></div>
           <div><span>{t.bidFee}</span><strong>{auction.fee} ETB</strong></div>
         </div>
         <div className="auction-card-footer">
@@ -222,13 +178,17 @@ function AuctionCard({ auction, language, onOpen, onSave }: { auction: Auction; 
 }
 
 export default function Home() {
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isAdmin, user } = useAuth();
   const [, setLocation] = useLocation();
   const auctionQuery = trpc.auction.list.useQuery();
   const submitBidMutation = trpc.auction.submitBid.useMutation();
-  const watchlistMutation = trpc.auction.toggleWatchlist.useMutation();
   const preparePaymentMutation = trpc.payment.prepareTelebirr.useMutation();
-  const [language, setLanguage] = useState<Language>("en");
+  const completeSandboxPaymentMutation = trpc.payment.completeSandbox.useMutation();
+  const paymentModeQuery = trpc.payment.mode.useQuery();
+  const resultsQuery = trpc.auction.results.useQuery();
+  const utils = trpc.useUtils();
+  const [language, setLanguage] = useState<Language>(() => localStorage.getItem("cherta-language") === "am" ? "am" : "en");
+  const [now, setNow] = useState(() => Date.now());
   const [category, setCategory] = useState<Category>("All");
   const [query, setQuery] = useState("");
   const [selectedAuction, setSelectedAuction] = useState<Auction | null>(null);
@@ -236,48 +196,74 @@ export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
   const t = copy[language];
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => { localStorage.setItem("cherta-language", language); }, [language]);
+
   const sourceAuctions = useMemo<Auction[]>(() => {
-    if (!auctionQuery.data?.length) return auctions;
-    return auctionQuery.data.map((auction, index) => ({
+    if (!auctionQuery.data?.length) return [];
+    return auctionQuery.data.map((auction, index) => {
+      const targetTime = auction.startsAt.getTime() > now ? auction.startsAt.getTime() : auction.endsAt.getTime();
+      const remaining = Math.max(0, targetTime - now);
+      const days = Math.floor(remaining / 86400000);
+      const hours = Math.floor((remaining % 86400000) / 3600000);
+      const minutes = Math.floor((remaining % 3600000) / 60000);
+      return {
       id: String(auction.id),
       dbId: auction.id,
       title: auction.title,
       amTitle: auction.title,
       category: auction.category as Exclude<Category, "All">,
       image: auction.imagePath,
-      code: String(218 + index * 3),
-      time: `${Math.max(0, Math.ceil((auction.endsAt.getTime() - Date.now()) / 86400000))}d : live`,
+      code: String(auction.id).padStart(5, "0"),
+      time: `${days}d : ${String(hours).padStart(2, "0")}h : ${String(minutes).padStart(2, "0")}m`,
       ends: auction.endsAt.toLocaleString(),
       fee: Number(auction.bidFee),
-      bids: 0,
-      verified: auction.sellerName,
+      bids: auction.bidCount,
+      minBid: Number(auction.minBid),
+      maxBid: Number(auction.maxBid),
+      startsAt: auction.startsAt,
+      status: auction.startsAt.getTime() > now ? "upcoming" : "live",
+      sellerName: auction.sellerName,
       accent: index === 0 ? "emerald" : index === 1 ? "amber" : "plum",
       featured: index === 0,
-    }));
-  }, [auctionQuery.data]);
+    };
+    });
+  }, [auctionQuery.data, now]);
+
+  const featuredAuction = sourceAuctions[0];
 
   const visibleAuctions = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return sourceAuctions.filter((auction) => {
       const matchesCategory = category === "All" || auction.category === category;
-      const matchesQuery = !normalizedQuery || `${auction.title} ${auction.category} ${auction.verified}`.toLowerCase().includes(normalizedQuery);
+      const matchesQuery = !normalizedQuery || `${auction.title} ${auction.category} ${auction.sellerName}`.toLowerCase().includes(normalizedQuery);
       return matchesCategory && matchesQuery;
     });
   }, [category, query, sourceAuctions]);
 
-  const handleSave = (auction: Auction) => {
+  const handleSave = async (auction: Auction) => {
     if (!isAuthenticated) {
       setLocation("/signin");
       return;
     }
-    if (!auction.dbId) {
-      toast.info("This preview auction is not connected to the database yet.");
-      return;
+    if (!user) return;
+    const parsedEnd = new Date(auction.ends);
+    const endsAt = Number.isNaN(parsedEnd.getTime()) ? new Date(Date.now() + 24 * 60 * 60 * 1000) : parsedEnd;
+    try {
+      const saved = await toggleSavedAuction(user.uid, {
+        auctionId: auction.dbId ?? auction.id,
+        title: auction.title,
+        imagePath: auction.image,
+        endsAt,
+      });
+      toast.success(saved ? "Saved to your Firestore watchlist" : "Removed from your watchlist");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not update your Firestore watchlist");
     }
-    watchlistMutation.mutate({ auctionId: auction.dbId }, {
-      onSuccess: (result) => toast.success(result.saved ? "Saved to your watchlist" : "Removed from your watchlist"),
-      onError: (error) => toast.error(error.message || "Could not update your watchlist"),
-    });
   };
 
   const handleBid = () => {
@@ -288,20 +274,44 @@ export default function Home() {
       return;
     }
     if (!selectedAuction.dbId) {
-      toast.info("This preview auction is not connected to the database yet.");
+      toast.error("This auction is not connected to the transaction database.");
       return;
     }
+    if (selectedAuction.status !== "live") {
+      toast.info(`Bidding opens ${selectedAuction.startsAt.toLocaleString()}.`);
+      return;
+    }
+    if (!/^\d+(\.\d{1,2})?$/.test(bidAmount) || !Number.isFinite(Number(bidAmount))) {
+      toast.error("Enter a valid bid amount with up to two decimal places.");
+      return;
+    }
+    const amount = Number(bidAmount).toFixed(2);
+    if (Number(amount) < selectedAuction.minBid || Number(amount) > selectedAuction.maxBid) {
+      toast.error(`Bid amount must be between ${selectedAuction.minBid.toFixed(2)} and ${selectedAuction.maxBid.toFixed(2)} ETB.`);
+      return;
+    }
+    const auctionId = selectedAuction.dbId;
     preparePaymentMutation.mutate({ auctionId: selectedAuction.dbId }, {
       onSuccess: (order) => {
-        if (!order.ready) {
-          toast.info(language === "am" ? "የTelebirr ነጋዴ መለያ ሲገናኝ ክፍያ ይከፈታል።" : "Telebirr checkout is pending merchant setup.", {
-            description: `Payment order ${order.merchantReference} is saved as pending.`,
+        if (order.sandboxEnabled && order.id) {
+          completeSandboxPaymentMutation.mutate({ paymentOrderId: order.id }, {
+            onSuccess: () => submitBidMutation.mutate({ auctionId, amount, paymentOrderId: order.id! }, {
+              onSuccess: async () => {
+                toast.success("Test bid accepted. No real payment was taken.");
+                setSelectedAuction(null);
+                await Promise.all([utils.auction.list.invalidate(), utils.auction.myBids.invalidate(), utils.auction.results.invalidate()]);
+              },
+              onError: (error) => toast.error(error.message),
+            }),
+            onError: (error) => toast.error(error.message),
           });
           return;
         }
-        toast.info("Telebirr checkout is configured, but the provider handoff is not enabled in this environment yet.", {
-          description: `Payment order ${order.merchantReference} is waiting for provider confirmation.`,
-        });
+        if (order.checkoutUrl) {
+          window.location.assign(order.checkoutUrl);
+          return;
+        }
+        toast.info("A payment order was created, but no verified Telebirr checkout is configured yet.", { description: `Reference ${order.merchantReference}; this pending order cannot activate a bid.` });
       },
       onError: (error) => toast.error(error.message || "Could not prepare Telebirr payment"),
     });
@@ -331,7 +341,7 @@ export default function Home() {
         <div className="header-actions">
           <button className="language-toggle" onClick={() => setLanguage(language === "en" ? "am" : "en")} aria-label="Toggle language"><Globe2 size={16} /><span>{language === "en" ? "EN" : "አማ"}</span><ChevronDown size={13} /></button>
           <button className="header-icon" aria-label="Notifications" onClick={() => toast.info("Notifications will appear here in the live product.")}><Bell size={17} /><i /></button>
-          {isAuthenticated ? <button className="profile-chip" onClick={() => setLocation("/account")}><span>{(user?.name ?? "TC").slice(0, 1).toUpperCase()}</span>{user?.name ?? "Member"}</button> : <button className="signin-button" onClick={() => setLocation("/signin")}>{t.signIn} <ArrowUpRight size={15} /></button>}
+          {isAuthenticated ? <button className="profile-chip" onClick={() => setLocation(isAdmin ? "/admin" : "/account")}><span>{(user?.name ?? "TC").slice(0, 1).toUpperCase()}</span>{isAdmin ? "Admin" : user?.name ?? "Member"}</button> : <button className="signin-button" onClick={() => setLocation("/signin")}>{t.signIn} <ArrowUpRight size={15} /></button>}
           <button className="mobile-menu" aria-label="Open menu" onClick={() => setMenuOpen(!menuOpen)}>{menuOpen ? <X size={21} /> : <Menu size={21} />}</button>
         </div>
       </header>
@@ -343,37 +353,51 @@ export default function Home() {
             <h1>{t.heroTitle.split(" ").map((word, index) => <span key={`${word}-${index}`} className={index === 3 || index === 4 ? "hero-accent-word" : ""}>{word} </span>)}</h1>
             <p>{t.heroBody}</p>
             <div className="hero-actions"><button className="primary-button btn-spring" onClick={() => document.getElementById("auctions")?.scrollIntoView({ behavior: "smooth" })}>{t.explore} <ArrowUpRight size={17} /></button><button className="secondary-button btn-spring" onClick={showHowItWorks}><span className="play-dot">▶</span>{t.how}</button></div>
-            <div className="hero-proof"><div className="avatar-stack"><span>AA</span><span>MH</span><span>DK</span><span>+</span></div><div><strong>2,400+</strong><small>{language === "am" ? "የታመኑ ተሳታፊዎች" : "people already playing fair"}</small></div></div>
+            <div className="hero-proof"><div className="avatar-stack"><ShieldCheck size={18} /></div><div><strong>Lowest unique bid</strong><small>Rules and limits are shown before you submit.</small></div></div>
           </div>
           <div className="hero-visual animate-fade-up delay-2">
             <div className="hero-orb orb-one" /><div className="hero-orb orb-two" />
-            <div className="hero-art-card"><div className="hero-art-top"><span className="status-pill"><span className="status-dot" /> {t.livePill}</span><span className="hero-code">#218</span></div><img src={productImages.phone} alt="Emerald smartphone auction prize" /><div className="hero-art-bottom"><div><small>{t.ending}</small><strong>08<span>d</span> : 04<span>h</span> : 52<span>m</span></strong></div><div className="hero-art-price"><small>{t.bidFee}</small><strong>50 ETB</strong></div></div></div>
+            {featuredAuction ? <div className="hero-art-card"><div className="hero-art-top"><span className="status-pill"><span className="status-dot" /> {featuredAuction.status === "live" ? t.livePill : "UPCOMING"}</span><span className="hero-code">#{featuredAuction.code}</span></div><img src={featuredAuction.image} alt={featuredAuction.title} /><div className="hero-art-bottom"><div><small>{featuredAuction.status === "live" ? t.ending : "Opens"}</small><strong>{featuredAuction.time}</strong></div><div className="hero-art-price"><small>{t.bidFee}</small><strong>{featuredAuction.fee} ETB</strong></div></div></div> : <div className="hero-art-card hero-art-card-empty"><div className="hero-art-top"><span className="status-pill">MARKETPLACE</span></div><div className="hero-empty-copy"><Sparkles size={27} /><strong>New auctions will appear here</strong><span>Listings are published by the Cherta administrator.</span></div></div>}
             <div className="float-card float-card-trust"><div className="float-icon green"><ShieldCheck size={18} /></div><div><strong>{t.trust}</strong><span>{t.trustBody}</span></div></div>
             <div className="float-card float-card-result"><div className="float-icon amber"><Trophy size={18} /></div><div><strong>Lowest unique wins</strong><span>Every result is recorded</span></div></div>
-            <div className="hero-stamp"><span>Since</span><strong>2026</strong><span>Addis Ababa</span></div>
+            <div className="hero-stamp"><span>Currency</span><strong>ETB</strong><span>Local marketplace</span></div>
           </div>
         </section>
 
-        <section className="trust-strip container"><div className="trust-strip-item"><ShieldCheck size={19} /><span><strong>Verified products</strong><small>From trusted local sellers</small></span></div><div className="trust-strip-item"><LockKeyhole size={19} /><span><strong>Clear participation</strong><small>Know the fee before you bid</small></span></div><div className="trust-strip-item"><Landmark size={19} /><span><strong>ETB native</strong><small>Built for how we pay</small></span></div><div className="trust-strip-item"><MessageCircle size={19} /><span><strong>Human support</strong><small>We are here when you need us</small></span></div></section>
+        <section className="trust-strip container"><div className="trust-strip-item"><ShieldCheck size={19} /><span><strong>Product details</strong><small>Review listing information before joining</small></span></div><div className="trust-strip-item"><LockKeyhole size={19} /><span><strong>Clear participation</strong><small>See the fee and bid limits first</small></span></div><div className="trust-strip-item"><Landmark size={19} /><span><strong>ETB amounts</strong><small>Fees and bids are displayed in ETB</small></span></div><div className="trust-strip-item"><MessageCircle size={19} /><span><strong>Result references</strong><small>Published outcomes include a hash</small></span></div></section>
 
         <section id="auctions" className="auctions-section container">
           <div className="section-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> {t.live}</div><h2>Pick your next <em>smart move.</em></h2></div><button className="link-button" onClick={() => { setCategory("All"); setQuery(""); toast.info("Showing all live auctions"); }}>{t.viewAll} <ArrowUpRight size={15} /></button></div>
           <div className="auction-toolbar"><div className="search-box"><Search size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={language === "am" ? "ምርት ይፈልጉ..." : "Search products, sellers..."} /></div><div className="category-pills"><Filter size={15} />{(["All", "Phones", "Home tech", "Audio"] as Category[]).map((item) => <button key={item} className={category === item ? "category-pill-active" : ""} onClick={() => setCategory(item)}>{item === "All" ? (language === "am" ? "ሁሉም" : "All") : item}</button>)}</div><button className="filter-button" onClick={() => toast.info("More filters are coming to the live marketplace.")}><SlidersHorizontal size={15} /> Filters</button></div>
-          <div className="auction-grid">{visibleAuctions.length ? visibleAuctions.map((auction) => <AuctionCard key={auction.id} auction={auction} language={language} onOpen={setSelectedAuction} onSave={handleSave} />) : <div className="empty-state"><Search size={24} /><strong>No auctions found</strong><span>Try another search or category.</span></div>}</div>
+          <div className="auction-grid">{visibleAuctions.length ? visibleAuctions.map((auction) => <AuctionCard key={auction.id} auction={auction} language={language} onOpen={(item) => { setSelectedAuction(item); setBidAmount(item.minBid.toFixed(2)); }} onSave={handleSave} />) : <div className="empty-state">{auctionQuery.isLoading ? <RefreshCw size={24} className="animate-spin" /> : <Search size={24} />}<strong>{auctionQuery.isLoading ? "Loading auctions…" : auctionQuery.isError ? "Auction service is unavailable" : "No published auctions"}</strong><span>{auctionQuery.isError ? "Please try again later or contact support." : "Published auctions will appear here. Check back soon."}</span></div>}</div>
         </section>
 
         <section id="how-it-works" className="how-section">
-          <div className="container how-layout"><div className="how-copy"><div className="eyebrow light"><span className="eyebrow-line" /> {t.transparent}</div><h2>{t.transparent}</h2><p>{t.transparentBody}</p><button className="light-button btn-spring" onClick={() => toast.info("The full learning guide is coming soon.")}>{t.learn} <ArrowUpRight size={16} /></button></div><div className="steps-grid"><div className="step-card"><span className="step-number">01</span><div className="step-icon"><Zap size={19} /></div><h3>{t.step1}</h3><p>Browse verified products and read the rules before joining.</p></div><div className="step-card step-card-raised"><span className="step-number">02</span><div className="step-icon"><Sparkles size={19} /></div><h3>{t.step2}</h3><p>Choose a bid amount within the auction limits. No guesswork.</p></div><div className="step-card"><span className="step-number">03</span><div className="step-icon"><Trophy size={19} /></div><h3>{t.step3}</h3><p>The lowest amount submitted exactly once wins the product.</p></div></div></div>
+          <div className="container how-layout"><div className="how-copy"><div className="eyebrow light"><span className="eyebrow-line" /> {t.transparent}</div><h2>{t.transparent}</h2><p>{t.transparentBody}</p><button className="light-button btn-spring" onClick={() => toast.info("The full learning guide is coming soon.")}>{t.learn} <ArrowUpRight size={16} /></button></div><div className="steps-grid"><div className="step-card"><span className="step-number">01</span><div className="step-icon"><Zap size={19} /></div><h3>{t.step1}</h3><p>Browse product listings and read the rules before joining.</p></div><div className="step-card step-card-raised"><span className="step-number">02</span><div className="step-icon"><Sparkles size={19} /></div><h3>{t.step2}</h3><p>Choose a bid amount within the auction limits. No guesswork.</p></div><div className="step-card"><span className="step-number">03</span><div className="step-icon"><Trophy size={19} /></div><h3>{t.step3}</h3><p>The lowest amount submitted exactly once wins the product.</p></div></div></div>
         </section>
 
-        <section id="winners" className="winners-section container"><div className="section-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> {t.winners}</div><h2>{t.winnerLine}</h2><p>{t.winnerBody}</p></div><button className="link-button" onClick={() => toast.info("Winner gallery is being curated for launch.")}>{t.viewAll} <ArrowUpRight size={15} /></button></div><div className="winner-grid"><div className="winner-feature"><img src={productImages.tv} alt="Winner's smart TV" /><div className="winner-feature-overlay"><span>WINNER · #209</span><strong>“A clear process from start to finish.”</strong><small>— Meron, Addis Ababa</small></div></div><div className="winner-stat-card"><div className="winner-stat-icon"><Trophy size={21} /></div><strong>12.54 ETB</strong><span>Lowest unique win</span><div className="winner-stat-rule" /><p>Every completed auction gets a result reference you can follow.</p><button className="text-button" onClick={() => toast.info("Result references will be public after launch.")}>How results work <ChevronRight size={15} /></button></div><div className="winner-quote-card"><div className="quote-mark">“</div><p>“I liked seeing the rule explained before I joined. It felt different from the usual prize apps.”</p><div className="quote-person"><span>NA</span><div><strong>Nati A.</strong><small>Early Cherta member</small></div></div></div></div></section>
+        <section id="winners" className="winners-section container">
+          <div className="section-heading"><div><div className="eyebrow"><span className="eyebrow-line" /> {t.winners}</div><h2>{t.winnerLine}</h2><p>{t.winnerBody}</p></div><button className="link-button" onClick={() => void resultsQuery.refetch()}>{t.viewAll} <ArrowUpRight size={15} /></button></div>
+          <div className="winner-grid">
+            {resultsQuery.data?.slice(0, 3).map((result) => <article className="winner-stat-card" key={result.auctionId}>
+              <div className="winner-stat-icon"><Trophy size={21} /></div>
+              <strong>{result.resultType === "winner" ? `${result.winningAmount} ETB` : "No unique bid"}</strong>
+              <span>{result.resultType === "winner" ? result.winnerName ?? "Winner" : "No winner declared"}</span>
+              <div className="winner-stat-rule" />
+              <p>{result.title} · {result.validBidCount} valid bids · {result.referenceCode}{result.maskedPhone ? ` · ${result.maskedPhone}` : ""}</p>
+              <button className="text-button" onClick={() => toast.info(`Verification SHA-256: ${result.resultHash}`)}>Verify result <ChevronRight size={15} /></button>
+            </article>)}
+            {!resultsQuery.isLoading && !resultsQuery.data?.length && <div className="empty-state"><Trophy size={24} /><strong>No results published yet</strong><span>Finalized auction results will appear here with a public verification reference.</span></div>}
+            {resultsQuery.isLoading && <div className="empty-state"><RefreshCw size={22} className="animate-spin" /><strong>Loading results…</strong></div>}
+          </div>
+        </section>
 
         <section id="faq" className="faq-section container"><div className="faq-inner"><div><div className="eyebrow"><span className="eyebrow-line" /> {t.faq}</div><h2>{t.faq}</h2><p>{t.faqBody}</p></div><button className="secondary-button btn-spring" onClick={() => toast.info("FAQ center will open here in the next release.")}>{t.openFaq} <ArrowUpRight size={16} /></button></div></section>
       </main>
 
       <footer className="site-footer"><div className="container footer-grid"><div><a href="#top" className="brand-lockup footer-brand"><BrandMark /><span><strong>Tesaka</strong><em>Cherta</em></span></a><p>Fair play, made local.<br />ግልጽ ጨረታ፣ ለሁሉም።</p></div><div><h4>Explore</h4><a href="#auctions">Live auctions</a><a href="#winners">Winners</a><a href="#how-it-works">How it works</a></div><div><h4>Trust</h4><a href="#faq">FAQ & rules</a><a href="#faq">Responsible play</a><a href="#faq">Contact support</a></div><div className="footer-note"><span className="footer-dot" /> Built for the next smart move.<small>© 2026 Tesaka Cherta · Addis Ababa, Ethiopia</small></div></div></footer>
 
-      {selectedAuction && <div className="modal-backdrop" onClick={() => setSelectedAuction(null)}><div className="auction-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedAuction(null)} aria-label="Close"><X size={19} /></button><div className="modal-image"><img src={selectedAuction.image} alt={selectedAuction.title} /></div><div className="modal-content"><span className="status-pill"><span className="status-dot" /> {t.livePill} · #{selectedAuction.code}</span><h2>{selectedAuction.title}</h2><p className="modal-seller"><ShieldCheck size={15} /> {selectedAuction.verified} · {t.seller}</p><div className="modal-rule"><div className="modal-rule-icon"><CheckCircle2 size={17} /></div><div><strong>Lowest unique bid</strong><span>The lowest amount submitted exactly once wins.</span></div></div><div className="modal-stats"><div><small>{t.closing}</small><strong>{selectedAuction.ends}</strong></div><div><small>{t.bidFee}</small><strong>{selectedAuction.fee} ETB</strong></div></div><label className="bid-label">{t.amount}<div className="bid-input-wrap"><input value={bidAmount} onChange={(event) => setBidAmount(event.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /><span>ETB</span></div></label><div className="modal-actions"><button className="primary-button btn-spring" onClick={handleBid} disabled={submitBidMutation.isPending || preparePaymentMutation.isPending}>{preparePaymentMutation.isPending ? "Preparing Telebirr…" : submitBidMutation.isPending ? "Submitting…" : t.submit} <ArrowUpRight size={16} /></button><button className="cancel-button" onClick={() => setSelectedAuction(null)}>{t.cancel}</button></div><small className="demo-note">{isAuthenticated ? "A Telebirr payment order is created before the bid is accepted." : "Sign in is required before payment or a bid can be saved."}</small></div></div></div>}
+      {selectedAuction && <div className="modal-backdrop" onClick={() => setSelectedAuction(null)}><div className="auction-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedAuction(null)} aria-label="Close"><X size={19} /></button><div className="modal-image"><img src={selectedAuction.image} alt={selectedAuction.title} /></div><div className="modal-content"><span className="status-pill"><span className="status-dot" /> {selectedAuction.status === "live" ? t.livePill : "UPCOMING"} · #{selectedAuction.code}</span><h2>{selectedAuction.title}</h2><p className="modal-seller"><ShieldCheck size={15} /> {selectedAuction.sellerName} · {t.seller}</p><div className="modal-rule"><div className="modal-rule-icon"><CheckCircle2 size={17} /></div><div><strong>Lowest unique bid</strong><span>The lowest valid amount submitted exactly once wins. Duplicate amounts are not unique.</span></div></div><div className="modal-stats"><div><small>{selectedAuction.status === "live" ? t.closing : "Opens"}</small><strong>{selectedAuction.status === "live" ? selectedAuction.ends : selectedAuction.startsAt.toLocaleString()}</strong></div><div><small>{t.bidFee}</small><strong>{selectedAuction.fee} ETB</strong></div><div><small>Bid limits</small><strong>{selectedAuction.minBid.toFixed(2)}–{selectedAuction.maxBid.toFixed(2)} ETB</strong></div></div><label className="bid-label">{t.amount}<div className="bid-input-wrap"><input value={bidAmount} onChange={(event) => setBidAmount(event.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /><span>ETB</span></div></label><div className="modal-actions"><button className="primary-button btn-spring" onClick={handleBid} disabled={selectedAuction.status !== "live" || submitBidMutation.isPending || preparePaymentMutation.isPending || completeSandboxPaymentMutation.isPending}>{preparePaymentMutation.isPending ? "Preparing payment…" : completeSandboxPaymentMutation.isPending ? "Settling test payment…" : submitBidMutation.isPending ? "Submitting bid…" : t.submit} <ArrowUpRight size={16} /></button><button className="cancel-button" onClick={() => setSelectedAuction(null)}>{t.cancel}</button></div><small className="demo-note">{!isAuthenticated ? "Sign in is required to bid." : paymentModeQuery.data?.sandboxEnabled ? "SANDBOX: test payment only; no real money is charged." : "Live bidding stays blocked until verified Telebirr checkout is configured. A pending order does not activate a bid."}</small></div></div></div>}
     </div>
   );
 }

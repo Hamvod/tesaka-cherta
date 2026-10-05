@@ -7,6 +7,7 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import Auth from "./pages/Auth";
 import Account from "./pages/Account";
+import Admin from "./pages/Admin";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -16,6 +17,7 @@ function Router() {
       <Route path={"/signin"} component={() => <Auth mode="signin" />} />
       <Route path={"/register"} component={() => <Auth mode="register" />} />
       <Route path={"/account"} component={Account} />
+      <Route path={"/admin"} component={Admin} />
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />

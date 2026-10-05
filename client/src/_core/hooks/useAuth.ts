@@ -1,98 +1,158 @@
-import { startLogin, startLogout } from "@/const";
-import { supabase } from "@/lib/supabase";
+import { getIdTokenResult, onIdTokenChanged, signOut, type User as FirebaseUser } from "firebase/auth";
+import { useCallback, useEffect, useState } from "react";
+import { useLocation } from "wouter";
+import { auth } from "@/lib/firebase";
+import { ensureUserDocument } from "@/lib/firebaseData";
+import { isSupabaseEnabled, signOutOfSupabase, supabase } from "@/lib/supabase";
 import { trpc } from "@/lib/trpc";
-import { TRPCClientError } from "@trpc/client";
-import { useCallback, useEffect, useMemo } from "react";
+
+type CurrentUser = {
+  uid: string;
+  name: string;
+  email: string | null;
+  photoURL: string | null;
+  firebaseUser: FirebaseUser | null;
+};
 
 type UseAuthOptions = {
   redirectOnUnauthenticated?: boolean;
   redirectPath?: string;
 };
 
+function toCurrentUser(user: FirebaseUser | null): CurrentUser | null {
+  if (!user) return null;
+  return {
+    uid: user.uid,
+    name: user.displayName || user.email?.split("@")[0] || "Tesaka member",
+    email: user.email,
+    photoURL: user.photoURL,
+    firebaseUser: user,
+  };
+}
+
 export function useAuth(options?: UseAuthOptions) {
   const { redirectOnUnauthenticated = false, redirectPath } = options ?? {};
-  const utils = trpc.useUtils();
+  const [, setLocation] = useLocation();
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(auth.currentUser);
+  const [supabaseUserId, setSupabaseUserId] = useState<string | null>(null);
+  const [supabaseUser, setSupabaseUser] = useState<{ name: string; email: string | null } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
 
+  // Supabase session (primary). Resolves the server-assigned role for the
+  // account so admin-only screens behave the same as with Firebase claims.
   const meQuery = trpc.auth.me.useQuery(undefined, {
+    enabled: supabaseUserId !== null,
     retry: false,
     refetchOnWindowFocus: false,
   });
 
-  const logoutMutation = trpc.auth.logout.useMutation({
-    onSuccess: () => {
-      utils.auth.me.setData(undefined, null);
-    },
-  });
-
-  // Re-sync the "me" query whenever the Supabase session changes (initial
-  // restore, sign-in callback redirect, or sign-out).
   useEffect(() => {
-    const { data: subscription } = supabase.auth.onAuthStateChange(() => {
-      utils.auth.me.setData(undefined, null);
-      void meQuery.refetch();
-    });
-    return () => subscription.subscription.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [utils]);
+    if (supabaseUserId === null) return;
+    const role = (meQuery.data as { role?: string } | null | undefined)?.role;
+    if (role) setIsAdmin(role === "admin");
+  }, [meQuery.data, supabaseUserId]);
 
-  const logout = useCallback(async () => {
-    try {
-      // End the Supabase session locally, then clear any server state.
-      await startLogout();
-      await logoutMutation.mutateAsync();
-    } catch (error: unknown) {
-      if (
-        error instanceof TRPCClientError &&
-        error.data?.code === "UNAUTHORIZED"
-      ) {
+  useEffect(() => {
+    if (!isSupabaseEnabled()) return;
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session?.user) {
+        setSupabaseUserId(null);
+        setSupabaseUser(null);
+        setLoading(false);
         return;
       }
-      throw error;
-    } finally {
-      utils.auth.me.setData(undefined, null);
-      await utils.auth.me.invalidate();
-    }
-  }, [logoutMutation, utils]);
-
-  const state = useMemo(() => {
-    return {
-      user: meQuery.data ?? null,
-      loading: meQuery.isLoading || logoutMutation.isPending,
-      error: meQuery.error ?? logoutMutation.error ?? null,
-      isAuthenticated: Boolean(meQuery.data),
-    };
-  }, [
-    meQuery.data,
-    meQuery.error,
-    meQuery.isLoading,
-    logoutMutation.error,
-    logoutMutation.isPending,
-  ]);
+      const metadata = session.user.user_metadata ?? {};
+      const name =
+        typeof metadata.full_name === "string" && metadata.full_name.length > 0
+          ? metadata.full_name
+          : typeof metadata.name === "string" && metadata.name.length > 0
+            ? metadata.name
+            : session.user.email?.split("@")[0] ?? "Tesaka member";
+      setSupabaseUserId(session.user.id);
+      setSupabaseUser({ name, email: session.user.email ?? null });
+    });
+    return () => data.subscription.unsubscribe();
+  }, []);
 
   useEffect(() => {
-    if (!redirectOnUnauthenticated) return;
-    if (meQuery.isLoading || logoutMutation.isPending) return;
-    if (state.user) return;
-    if (typeof window === "undefined") return;
-    if (redirectPath && window.location.pathname === redirectPath) return;
+    let active = true;
+    let generation = 0;
+    const unsubscribe = onIdTokenChanged(auth, (nextUser) => {
+      const currentGeneration = ++generation;
+      setFirebaseUser(nextUser);
+      setLoading(true);
+      if (!nextUser) {
+        setIsAdmin(false);
+        setError(null);
+        setLoading(false);
+        return;
+      }
+      void ensureUserDocument(nextUser).catch((profileError: unknown) => {
+        console.error("[Firestore] Could not initialize the user profile", profileError);
+      });
+      void getIdTokenResult(nextUser).then((tokenResult) => {
+        if (!active || currentGeneration !== generation) return;
+        setIsAdmin(tokenResult.claims.admin === true);
+        setError(null);
+      }).catch((authError: unknown) => {
+        if (!active || currentGeneration !== generation) return;
+        setIsAdmin(false);
+        setError(authError instanceof Error ? authError : new Error("Could not read Firebase access claims"));
+      }).finally(() => {
+        if (active && currentGeneration === generation) setLoading(false);
+      });
+    }, (authError) => {
+      setError(authError);
+      setFirebaseUser(null);
+      setIsAdmin(false);
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
-    // Navigate at this moment only. startLogin() mints the nonce + cookie itself.
-    if (redirectPath) {
-      window.location.href = redirectPath;
-    } else {
-      startLogin();
+  const firebaseBackedUser = toCurrentUser(firebaseUser);
+  const user: CurrentUser | null =
+    supabaseUserId !== null && supabaseUser
+      ? {
+          uid: supabaseUserId,
+          name: supabaseUser.name,
+          email: supabaseUser.email,
+          photoURL: null,
+          firebaseUser: null,
+        }
+      : firebaseBackedUser;
+
+  useEffect(() => {
+    if (!redirectOnUnauthenticated || loading || user) return;
+    const currentPath = window.location.pathname;
+    if (redirectPath && currentPath !== redirectPath) setLocation(redirectPath);
+  }, [redirectOnUnauthenticated, redirectPath, loading, user, setLocation]);
+
+  const logout = useCallback(async () => {
+    if (isSupabaseEnabled()) {
+      await signOutOfSupabase().catch(() => {});
     }
-  }, [
-    redirectOnUnauthenticated,
-    redirectPath,
-    logoutMutation.isPending,
-    meQuery.isLoading,
-    state.user,
-  ]);
+    await signOut(auth);
+  }, []);
 
   return {
-    ...state,
-    refresh: () => meQuery.refetch(),
+    user,
+    loading,
+    error,
+    isAdmin,
+    isAuthenticated: Boolean(user),
+    refresh: async () => {
+      if (supabaseUserId !== null) {
+        await meQuery.refetch();
+        return;
+      }
+      await auth.currentUser?.reload();
+    },
     logout,
   };
 }

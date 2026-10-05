@@ -1,12 +1,14 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { ENV } from "./env";
+import { ENV } from "./env.js";
 
 let _admin: SupabaseClient | null = null;
 
-export function getSupabaseAdmin(): SupabaseClient | null {
-  if (!ENV.supabaseUrl || !ENV.supabaseServiceRoleKey) {
-    return null;
-  }
+export function isSupabaseConfigured(): boolean {
+  return Boolean(ENV.supabaseUrl && ENV.supabaseServiceRoleKey);
+}
+
+function getSupabaseAdmin(): SupabaseClient | null {
+  if (!isSupabaseConfigured()) return null;
   if (!_admin) {
     _admin = createClient(ENV.supabaseUrl, ENV.supabaseServiceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -21,6 +23,11 @@ export type SupabaseAccount = {
   name: string | null;
 };
 
+/**
+ * Verify a Supabase access token (JWT) and return the account it belongs to.
+ * Returns null when Supabase is unconfigured or the token is not a valid
+ * Supabase session, which lets the caller fall back to Firebase.
+ */
 export async function getSupabaseAccount(
   accessToken: string
 ): Promise<SupabaseAccount | null> {
@@ -36,16 +43,8 @@ export async function getSupabaseAccount(
         : typeof meta.name === "string" && meta.name.trim().length > 0
           ? meta.name
           : null;
-    return {
-      id: data.user.id,
-      email: data.user.email ?? null,
-      name,
-    };
+    return { id: data.user.id, email: data.user.email ?? null, name };
   } catch {
     return null;
   }
-}
-
-export function isSupabaseConfigured(): boolean {
-  return Boolean(ENV.supabaseUrl && ENV.supabaseServiceRoleKey);
 }

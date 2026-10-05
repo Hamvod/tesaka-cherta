@@ -1,8 +1,9 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
-import type { User } from "../../drizzle/schema";
-import { parse as parseCookieHeader } from "cookie";
-import * as db from "../db";
-import { getSupabaseAccount, isSupabaseConfigured } from "./supabase";
+import type { User } from "../../drizzle/schema.js";
+import * as db from "../db.js";
+import { ENV } from "./env.js";
+import { sdk } from "./sdk.js";
+import { getSupabaseAccount, isSupabaseConfigured } from "./supabase.js";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
@@ -12,34 +13,52 @@ export type TrpcContext = {
 
 const BEARER_PREFIX = "Bearer ";
 
-function extractAccessToken(req: CreateExpressContextOptions["req"]): string | null {
-  const header = req.headers.authorization;
-  if (typeof header === "string" && header.startsWith(BEARER_PREFIX)) {
-    const token = header.slice(BEARER_PREFIX.length).trim();
-    if (token) return token;
+function readBearerToken(req: CreateExpressContextOptions["req"]): string {
+  const authorization = req.headers.authorization;
+  if (typeof authorization === "string" && authorization.startsWith(BEARER_PREFIX)) {
+    return authorization.slice(BEARER_PREFIX.length).trim();
   }
-  const cookies = parseCookieHeader(req.headers.cookie ?? "");
-  const token = cookies["sb-access-token"];
-  return typeof token === "string" && token.length > 0 ? token : null;
+  return "";
 }
 
-async function authenticateFromRequest(
+/**
+ * Identity resolution order:
+ *   1. Supabase Auth (primary) — verified against the project's auth service.
+ *   2. Firebase Auth (fallback) — verified against Google's secure-token JWKS.
+ *
+ * Both paths upsert into the same relational `users` table so bids, watches and
+ * payments keep working regardless of which provider issued the session.
+ */
+async function authenticateRequest(
   req: CreateExpressContextOptions["req"]
 ): Promise<User | null> {
-  const accessToken = extractAccessToken(req);
-  if (!accessToken) return null;
-  if (!isSupabaseConfigured()) return null;
+  const token = readBearerToken(req);
+  if (!token) return null;
 
-  const account = await getSupabaseAccount(accessToken);
-  if (!account) return null;
+if (isSupabaseConfigured()) {
+    const account = await getSupabaseAccount(token);
+    if (account) {
+      const adminEmail = ENV.supabaseAdminEmail.trim().toLowerCase();
+      const role =
+        account.email && adminEmail && account.email.toLowerCase() === adminEmail
+          ? "admin"
+          : "user";
+      await db.upsertUser({
+        openId: account.id,
+        name: account.name,
+        email: account.email,
+        loginMethod: "supabase",
+        role,
+        lastSignedIn: new Date(),
+      });
+      const persisted = await db.getUserByOpenId(account.id);
+      return persisted ? { ...persisted, role } : null;
+    }
+  }
+  }
 
-  const user = await db.syncSupabaseUser({
-    supabaseId: account.id,
-    email: account.email,
-    name: account.name,
-    loginMethod: "google",
-  });
-  return user ?? null;
+  // Fallback: Firebase ID token.
+  return await sdk.authenticateRequest(req);
 }
 
 export async function createContext(
@@ -48,7 +67,7 @@ export async function createContext(
   let user: User | null = null;
 
   try {
-    user = await authenticateFromRequest(opts.req);
+    user = await authenticateRequest(opts.req);
   } catch (error) {
     // Authentication is optional for public procedures.
     user = null;
