@@ -45,6 +45,8 @@ export function createApp(): Express {
         primary: authPrimary,
         supabaseConfigured: isSupabaseConfigured(),
         firebaseFallback: true,
+        adminEmail: ENV.supabaseAdminEmail || null,
+        adminDisplayName: ENV.adminDisplayName,
       },
       database,
       payments: {

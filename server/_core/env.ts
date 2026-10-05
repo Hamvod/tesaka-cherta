@@ -13,7 +13,10 @@ export const ENV = {
     process.env.SUPABASE_SERVICE_ROLE_KEY ??
     process.env.SUPABASE_SECRET_KEY ??
     "",
-  supabaseAdminEmail: process.env.SUPABASE_ADMIN_EMAIL ?? "",
+  // Admin is matched by email on the Supabase (primary) path.
+  supabaseAdminEmail: (process.env.SUPABASE_ADMIN_EMAIL?.trim() || "mminani093@gmail.com").toLowerCase(),
+  // Display name used for the seeded administrator account.
+  adminDisplayName: process.env.ADMIN_DISPLAY_NAME?.trim() || "Homvod",
   // Firebase Auth + Firestore remain as the fallback identity/data path.
   firebaseProjectId: process.env.FIREBASE_PROJECT_ID ?? "studio-7668403722-dc933",
   ownerOpenId: process.env.OWNER_OPEN_ID ?? "",
