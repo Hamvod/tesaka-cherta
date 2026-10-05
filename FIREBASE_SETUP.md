@@ -19,12 +19,13 @@ pnpm install
 pnpm db:migrate
 ```
 
-The auction migration adds start times and bid constraints, payment-linked bid records, auction results, audit logs, and the unique payment-order-per-bid constraint. A follow-up adds the sandbox payment provider. **Migrations have not been applied from this workspace** because no database connection string is configured here.
+The auction migrations add start times and bid constraints, payment-linked bid records, auction results, audit logs, and the unique payment-order-per-bid constraint. Follow-ups add the sandbox provider, persisted active/suspended account status, and report records. **Migrations have not been applied from this workspace** because no database connection string is configured here.
 
 ## Implemented bidder and admin workflows
 
 - **Bidder:** browse published live/upcoming auctions, inspect rules and limits, save an auction, prepare a payment order, submit a server-validated bid, see bid history and wins, and update their profile/language.
-- **Admin:** `/admin` provides overview counts, draft auction creation, publication and close/result calculation, read-only user and payment views, and audit logs. All admin APIs require the verified Firebase admin claim.
+- **Admin:** `/admin` provides overview counts, draft auction creation, publication and close/result calculation, payment and audit views, account activation/suspension, and a report-review queue with internal notes. All admin APIs require the verified Firebase admin claim.
+- **Support/moderation:** bidders can submit private account/auction/payment/safety reports and view their status. Submission is server-validated and capped at five reports per hour. Admins can triage, resolve, or dismiss reports. Account suspension is stored in PostgreSQL and enforced by protected API middleware; users cannot suspend their own account, and admin accounts cannot be suspended from this control.
 - **Auction close/result:** valid bids are evaluated on the server using exact cents. The lowest amount submitted exactly once wins; results and SHA-256 bid-set hashes are stored with a reference and audit record. Expired auctions are finalized when auction/results/admin data is requested; an admin can also close early after an explicit in-app confirmation.
 - In development, the catalog may add demo listings if the database is empty. It does not auto-seed listings in production.
 
@@ -42,7 +43,7 @@ Do not launch paid bids or prizes until the authorized provider flow, idempotent
 
 ## Deliberately not included in this initial portal
 
-Separate seller/owner accounts and verification, device/session management, notifications, reports/complaints, account suspension, category/settings management, full English/Amharic localization of every screen, and 2FA/rate-limiting/fraud tooling still require further work. The current admin creates auctions directly; seller names are display text, not verified accounts. Do not interpret this MVP as production-ready for paid auctions.
+Separate seller/owner accounts and verification, device/session management, notifications, category/settings management, full English/Amharic localization of every screen, 2FA, and advanced fraud tooling still require further work. The current admin creates auctions directly; seller names are display text, not verified accounts. Do not interpret this MVP as production-ready for paid auctions.
 
 ## Validation
 

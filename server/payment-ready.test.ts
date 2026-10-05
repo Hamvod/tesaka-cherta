@@ -4,7 +4,7 @@ import type { TrpcContext } from "./_core/context";
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
-function createContext(): TrpcContext {
+function createContext(status: "active" | "suspended" = "active"): TrpcContext {
   const user: AuthenticatedUser = {
     id: 1,
     openId: "payment-test-user",
@@ -12,6 +12,7 @@ function createContext(): TrpcContext {
     name: "Payment Test User",
     loginMethod: "password",
     role: "user",
+    status,
     createdAt: new Date(),
     updatedAt: new Date(),
     lastSignedIn: new Date(),
@@ -48,5 +49,11 @@ describe("payment-ready bid safeguards", () => {
     });
     await expect(caller.auction.myBids()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
     await expect(caller.auction.myWins()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+  });
+
+  it("blocks suspended users from protected bidder and administrator procedures", async () => {
+    const caller = appRouter.createCaller(createContext("suspended"));
+    await expect(caller.auction.myBids()).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(caller.admin.dashboard()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });

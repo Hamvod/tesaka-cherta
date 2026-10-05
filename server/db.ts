@@ -11,6 +11,7 @@ import {
   InsertUser,
   paymentEvents,
   paymentOrders,
+  reports,
   users,
   watchlist,
 } from "../drizzle/schema";
@@ -381,8 +382,10 @@ export async function getAdminDashboardStats() {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
   await closeExpiredAuctions();
-  const [userCount, liveCount, completedCount, bidCount, paymentCount, winnerCount] = await Promise.all([
+  const [userCount, activeUserCount, openReportCount, liveCount, completedCount, bidCount, paymentCount, winnerCount] = await Promise.all([
     db.select({ value: count() }).from(users),
+    db.select({ value: count() }).from(users).where(eq(users.status, "active")),
+    db.select({ value: count() }).from(reports).where(eq(reports.status, "open")),
     db.select({ value: count() }).from(auctions).where(eq(auctions.status, "live")),
     db.select({ value: count() }).from(auctionResults),
     db.select({ value: count() }).from(bids),
@@ -391,6 +394,8 @@ export async function getAdminDashboardStats() {
   ]);
   return {
     totalUsers: Number(userCount[0]?.value ?? 0),
+    activeUsers: Number(activeUserCount[0]?.value ?? 0),
+    openReports: Number(openReportCount[0]?.value ?? 0),
     liveAuctions: Number(liveCount[0]?.value ?? 0),
     completedAuctions: Number(completedCount[0]?.value ?? 0),
     totalBids: Number(bidCount[0]?.value ?? 0),
@@ -409,8 +414,90 @@ export async function listAdminAuctions() {
 export async function listAdminUsers() {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
-  return db.select({ id: users.id, name: users.name, email: users.email, role: users.role, createdAt: users.createdAt, lastSignedIn: users.lastSignedIn })
+  return db.select({ id: users.id, name: users.name, email: users.email, role: users.role, status: users.status, createdAt: users.createdAt, lastSignedIn: users.lastSignedIn })
     .from(users).orderBy(desc(users.lastSignedIn)).limit(100);
+}
+
+export async function updateUserStatus(actorId: number, targetUserId: number, status: "active" | "suspended") {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.transaction(async (tx) => {
+    const [target] = await tx.select().from(users).where(eq(users.id, targetUserId)).for("update").limit(1);
+    if (!target) throw new Error("User not found");
+    if (target.id === actorId) throw new Error("You cannot change your own account status");
+    if (target.role === "admin") throw new Error("Administrator accounts cannot be suspended from this screen");
+    if (target.status === status) return target;
+    const [updated] = await tx.update(users).set({ status, updatedAt: new Date() }).where(eq(users.id, targetUserId)).returning();
+    await tx.insert(auditLogs).values({
+      actorId,
+      action: status === "suspended" ? "user.suspended" : "user.reactivated",
+      entityType: "user",
+      entityId: String(targetUserId),
+      oldValue: { status: target.status },
+      newValue: { status },
+    });
+    return updated;
+  });
+}
+
+export async function submitUserReport(reporterId: number, input: { category: string; subject: string; details: string; targetType?: string | null; targetId?: string | null }) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(${reporterId})`);
+    const [recent] = await tx.select({ value: count() }).from(reports)
+      .where(and(eq(reports.reporterId, reporterId), gt(reports.createdAt, new Date(Date.now() - 60 * 60 * 1000))));
+    if (Number(recent?.value ?? 0) >= 5) throw new Error("Report limit reached. Please wait before sending another report.");
+    const [created] = await tx.insert(reports).values({
+      reporterId,
+      category: input.category,
+      subject: input.subject,
+      details: input.details,
+      targetType: input.targetType ?? null,
+      targetId: input.targetId ?? null,
+    }).returning();
+    await tx.insert(auditLogs).values({ actorId: reporterId, action: "report.submitted", entityType: "report", entityId: String(created.id), newValue: { category: created.category, subject: created.subject } });
+    return created;
+  });
+}
+
+export async function listUserReports(reporterId: number) {
+  const db = await getDb();
+  if (!db) return [];
+  return db.select({ id: reports.id, category: reports.category, subject: reports.subject, status: reports.status, createdAt: reports.createdAt })
+    .from(reports).where(eq(reports.reporterId, reporterId)).orderBy(desc(reports.createdAt)).limit(50);
+}
+
+export async function listAdminReports() {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.select({
+    id: reports.id,
+    reporterId: reports.reporterId,
+    reporterName: users.name,
+    reporterEmail: users.email,
+    category: reports.category,
+    subject: reports.subject,
+    details: reports.details,
+    targetType: reports.targetType,
+    targetId: reports.targetId,
+    status: reports.status,
+    adminNotes: reports.adminNotes,
+    createdAt: reports.createdAt,
+    updatedAt: reports.updatedAt,
+  }).from(reports).innerJoin(users, eq(reports.reporterId, users.id)).orderBy(desc(reports.createdAt)).limit(100);
+}
+
+export async function updateAdminReport(actorId: number, reportId: number, status: "open" | "reviewing" | "resolved" | "dismissed", adminNotes: string | null) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  return db.transaction(async (tx) => {
+    const [report] = await tx.select().from(reports).where(eq(reports.id, reportId)).for("update").limit(1);
+    if (!report) throw new Error("Report not found");
+    const [updated] = await tx.update(reports).set({ status, adminNotes, reviewedBy: actorId, updatedAt: new Date() }).where(eq(reports.id, reportId)).returning();
+    await tx.insert(auditLogs).values({ actorId, action: "report.review_updated", entityType: "report", entityId: String(reportId), oldValue: { status: report.status }, newValue: { status } });
+    return updated;
+  });
 }
 
 export async function listAdminPayments() {

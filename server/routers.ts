@@ -49,6 +49,22 @@ export const appRouter = router({
       marketingOptIn: input.marketingOptIn ? 1 : 0,
     })),
   }),
+  support: router({
+    myReports: protectedProcedure.query(({ ctx }) => db.listUserReports(ctx.user.id)),
+    submitReport: protectedProcedure.input(z.object({
+      category: z.enum(["account", "auction", "payment", "safety", "other"]),
+      subject: z.string().trim().min(4).max(160),
+      details: z.string().trim().min(20).max(4000),
+      targetType: z.enum(["auction", "payment", "user"]).nullable().optional(),
+      targetId: z.string().trim().max(120).nullable().optional(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        return await db.submitUserReport(ctx.user.id, input);
+      } catch (error) {
+        return badRequest(error, "Unable to submit report");
+      }
+    }),
+  }),
   payment: router({
     mode: publicProcedure.query(() => ({ sandboxEnabled: ENV.enableTestPayments, telebirrCheckoutReady: false })),
     prepareTelebirr: protectedProcedure.input(z.object({ auctionId: z.number().int().positive() })).mutation(async ({ ctx, input }) => {
@@ -71,8 +87,27 @@ export const appRouter = router({
     dashboard: adminProcedure.query(() => db.getAdminDashboardStats()),
     auctions: adminProcedure.query(() => db.listAdminAuctions()),
     users: adminProcedure.query(() => db.listAdminUsers()),
+    reports: adminProcedure.query(() => db.listAdminReports()),
     payments: adminProcedure.query(() => db.listAdminPayments()),
     audit: adminProcedure.query(() => db.listAuditLogs()),
+    updateUserStatus: adminProcedure.input(z.object({ userId: z.number().int().positive(), status: z.enum(["active", "suspended"]) })).mutation(async ({ ctx, input }) => {
+      try {
+        return await db.updateUserStatus(ctx.user.id, input.userId, input.status);
+      } catch (error) {
+        return badRequest(error, "Unable to update user status");
+      }
+    }),
+    reviewReport: adminProcedure.input(z.object({
+      reportId: z.number().int().positive(),
+      status: z.enum(["open", "reviewing", "resolved", "dismissed"]),
+      adminNotes: z.string().trim().max(2000).nullable(),
+    })).mutation(async ({ ctx, input }) => {
+      try {
+        return await db.updateAdminReport(ctx.user.id, input.reportId, input.status, input.adminNotes);
+      } catch (error) {
+        return badRequest(error, "Unable to update report");
+      }
+    }),
     createAuction: adminProcedure.input(z.object({
       title: z.string().trim().min(3).max(220),
       category: z.string().trim().min(2).max(80),

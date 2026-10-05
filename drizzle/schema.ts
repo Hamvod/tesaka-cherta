@@ -1,4 +1,4 @@
-import { decimal, integer, jsonb, pgEnum, pgTable, serial, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
+import { decimal, integer, jsonb, pgEnum, pgTable, serial, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 
 export const userRole = pgEnum("user_role", ["user", "admin"]);
 export const profileLanguage = pgEnum("profile_language", ["en", "am"]);
@@ -7,6 +7,8 @@ export const paymentProvider = pgEnum("payment_provider", ["telebirr", "sandbox"
 export const paymentStatus = pgEnum("payment_status", ["pending", "paid", "failed", "cancelled"]);
 export const bidStatus = pgEnum("bid_status", ["valid", "invalid"]);
 export const resultType = pgEnum("result_type", ["winner", "no_unique_bid"]);
+export const accountStatus = pgEnum("account_status", ["active", "suspended"]);
+export const reportStatus = pgEnum("report_status", ["open", "reviewing", "resolved", "dismissed"]);
 
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
@@ -15,6 +17,7 @@ export const users = pgTable("users", {
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
   role: userRole("role").default("user").notNull(),
+  status: accountStatus("status").default("active").notNull(),
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn", { withTimezone: true }).defaultNow().notNull(),
@@ -122,6 +125,21 @@ export const auditLogs = pgTable("audit_logs", {
   createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
 });
 
+export const reports = pgTable("reports", {
+  id: serial("id").primaryKey(),
+  reporterId: integer("reporterId").notNull(),
+  category: varchar("category", { length: 40 }).notNull(),
+  subject: varchar("subject", { length: 160 }).notNull(),
+  details: text("details").notNull(),
+  targetType: varchar("targetType", { length: 40 }),
+  targetId: varchar("targetId", { length: 120 }),
+  status: reportStatus("status").default("open").notNull(),
+  adminNotes: text("adminNotes"),
+  reviewedBy: integer("reviewedBy"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 export type AccountProfile = typeof accountProfiles.$inferSelect;
@@ -132,3 +150,4 @@ export type Bid = typeof bids.$inferSelect;
 export type WatchlistItem = typeof watchlist.$inferSelect;
 export type PaymentOrder = typeof paymentOrders.$inferSelect;
 export type PaymentEvent = typeof paymentEvents.$inferSelect;
+export type Report = typeof reports.$inferSelect;

@@ -27,6 +27,7 @@ function fallbackUser(uid: string, name: string, email: string | null, signInPro
     email,
     loginMethod: signInProvider,
     role: isAdmin ? "admin" : "user",
+    status: "active",
     createdAt: now,
     updatedAt: now,
     lastSignedIn: now,
@@ -66,7 +67,7 @@ class FirebaseAuthServer {
     // Keep the existing transactional backend's relational identity row when a
     // database is configured. Firestore user data is managed directly by the client.
     try {
-      await db.upsertUser({ openId: uid, name, email, loginMethod: signInProvider, lastSignedIn: new Date() });
+      await db.upsertUser({ openId: uid, name, email, loginMethod: signInProvider, role: isAdmin ? "admin" : "user", lastSignedIn: new Date() });
       const persistedUser = await db.getUserByOpenId(uid);
       if (persistedUser) return { ...persistedUser, role: isAdmin ? "admin" : "user" };
     } catch (error) {

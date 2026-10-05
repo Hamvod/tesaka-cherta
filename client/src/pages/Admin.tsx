@@ -1,11 +1,11 @@
 import { FormEvent, useEffect, useState } from "react";
-import { ArrowLeft, BadgeCheck, CalendarClock, CircleDollarSign, ClipboardList, LayoutDashboard, LogOut, Plus, RefreshCw, ShieldCheck, Tag, Trophy, Users } from "lucide-react";
+import { ArrowLeft, BadgeCheck, Ban, CircleDollarSign, ClipboardList, Flag, LayoutDashboard, LogOut, Plus, RefreshCw, ShieldCheck, Tag, Trophy, Users, UserRoundCheck } from "lucide-react";
 import { toast } from "sonner";
 import { useLocation } from "wouter";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 
-type AdminTab = "overview" | "auctions" | "users" | "payments" | "audit";
+type AdminTab = "overview" | "auctions" | "users" | "reports" | "payments" | "audit";
 
 function localDateTime(date: Date) {
   const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
@@ -29,6 +29,7 @@ const tabs: { id: AdminTab; title: string; icon: typeof LayoutDashboard }[] = [
   { id: "overview", title: "Overview", icon: LayoutDashboard },
   { id: "auctions", title: "Auctions", icon: Tag },
   { id: "users", title: "Users", icon: Users },
+  { id: "reports", title: "Reports", icon: Flag },
   { id: "payments", title: "Payments", icon: CircleDollarSign },
   { id: "audit", title: "Audit log", icon: ClipboardList },
 ];
@@ -36,16 +37,34 @@ const tabs: { id: AdminTab; title: string; icon: typeof LayoutDashboard }[] = [
 export default function Admin() {
   const [, setLocation] = useLocation();
   const { user, loading, isAdmin, logout } = useAuth();
+  const session = trpc.auth.me.useQuery(undefined, { enabled: Boolean(user) });
   const [tab, setTab] = useState<AdminTab>("overview");
   const [form, setForm] = useState(initialForm);
   const [showCreate, setShowCreate] = useState(false);
+  const [reportStatuses, setReportStatuses] = useState<Record<number, "open" | "reviewing" | "resolved" | "dismissed">>({});
+  const [reportNotes, setReportNotes] = useState<Record<number, string>>({});
   const utils = trpc.useUtils();
 
   const dashboard = trpc.admin.dashboard.useQuery(undefined, { refetchInterval: 30_000 });
   const auctions = trpc.admin.auctions.useQuery(undefined, { enabled: tab === "auctions" || tab === "overview" });
   const users = trpc.admin.users.useQuery(undefined, { enabled: tab === "users" });
+  const reports = trpc.admin.reports.useQuery(undefined, { enabled: tab === "reports" });
   const payments = trpc.admin.payments.useQuery(undefined, { enabled: tab === "payments" });
   const audit = trpc.admin.audit.useQuery(undefined, { enabled: tab === "audit" || tab === "overview" });
+  const updateUserStatus = trpc.admin.updateUserStatus.useMutation({
+    onSuccess: async (_user, variables) => {
+      toast.success(variables.status === "suspended" ? "Account suspended." : "Account reactivated.");
+      await Promise.all([utils.admin.users.invalidate(), utils.admin.audit.invalidate(), utils.admin.dashboard.invalidate()]);
+    },
+    onError: (error) => toast.error(error.message),
+  });
+  const reviewReport = trpc.admin.reviewReport.useMutation({
+    onSuccess: async () => {
+      toast.success("Report review saved.");
+      await Promise.all([utils.admin.reports.invalidate(), utils.admin.audit.invalidate(), utils.admin.dashboard.invalidate()]);
+    },
+    onError: (error) => toast.error(error.message),
+  });
   const createAuction = trpc.admin.createAuction.useMutation({
     onSuccess: async () => {
       toast.success("Auction saved as a draft. Review the dates and publish it when ready.");
@@ -91,13 +110,28 @@ export default function Admin() {
     if (approved) closeAuction.mutate({ auctionId });
   };
 
+  const changeAccountStatus = (item: { id: number; email: string | null; status: "active" | "suspended" }) => {
+    const status = item.status === "active" ? "suspended" : "active";
+    const approved = window.confirm(`${status === "suspended" ? "Suspend" : "Reactivate"} ${item.email || `user #${item.id}`}? ${status === "suspended" ? "They will be blocked from protected bidder and admin APIs." : "They will regain access to protected APIs."}`);
+    if (approved) updateUserStatus.mutate({ userId: item.id, status });
+  };
+
+  const saveReportReview = (reportId: number, currentStatus: "open" | "reviewing" | "resolved" | "dismissed", currentNotes: string | null) => {
+    reviewReport.mutate({ reportId, status: reportStatuses[reportId] ?? currentStatus, adminNotes: reportNotes[reportId] ?? currentNotes ?? null });
+  };
+
   if (loading || !user || !isAdmin) {
     return <main className="min-h-screen grid place-items-center bg-[#fbf7ed] text-[#173f36]"><div className="text-center"><ShieldCheck className="mx-auto mb-3 h-8 w-8 text-[#0b5f4a]" /><p className="text-sm font-semibold">Verifying administrator access…</p></div></main>;
+  }
+  if (session.data?.status === "suspended") {
+    return <main className="grid min-h-screen place-items-center bg-[#fbf7ed] px-5 text-[#173f36]"><section className="max-w-lg rounded-3xl border border-[#e6dccb] bg-[#fffdf8] p-8 text-center"><ShieldCheck className="mx-auto mb-4 h-10 w-10 text-[#9b3929]" /><h1 className="font-serif text-3xl">Administrator access suspended</h1><p className="mt-3 text-sm leading-6 text-[#737e73]">This account cannot use protected services. Sign out and contact platform support.</p><button onClick={() => void handleSignOut()} className="mt-6 rounded-full bg-[#0b5f4a] px-5 py-2.5 text-sm font-bold text-white">Sign out</button></section></main>;
   }
 
   const stats = dashboard.data;
   const statCards = [
     { label: "Users", value: stats?.totalUsers, icon: Users },
+    { label: "Active users", value: stats?.activeUsers, icon: UserRoundCheck },
+    { label: "Open reports", value: stats?.openReports, icon: Flag },
     { label: "Live auctions", value: stats?.liveAuctions, icon: Tag },
     { label: "Completed", value: stats?.completedAuctions, icon: Trophy },
     { label: "Bids", value: stats?.totalBids, icon: ClipboardList },
@@ -124,7 +158,7 @@ export default function Admin() {
         <section className="min-w-0">
           <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
             <div><div className="mb-2 inline-flex items-center gap-2 rounded-full bg-[#e4f0e2] px-3 py-1.5 text-[10px] font-extrabold tracking-wide text-[#0b5f4a]"><BadgeCheck size={14} /> FIREBASE ADMIN CLAIM VERIFIED</div><h2 className="font-serif text-4xl tracking-tight">{tabs.find((item) => item.id === tab)?.title}</h2><p className="mt-2 text-sm text-[#737e73]">Manage the auction lifecycle and inspect platform activity.</p></div>
-            <button onClick={() => { void dashboard.refetch(); void auctions.refetch(); void audit.refetch(); }} className="inline-flex items-center gap-2 rounded-full border border-[#d7d8c9] bg-white px-4 py-2 text-sm font-bold"><RefreshCw size={14} /> Refresh</button>
+            <button onClick={() => { void dashboard.refetch(); void auctions.refetch(); void users.refetch(); void reports.refetch(); void audit.refetch(); }} className="inline-flex items-center gap-2 rounded-full border border-[#d7d8c9] bg-white px-4 py-2 text-sm font-bold"><RefreshCw size={14} /> Refresh</button>
           </div>
 
           {tab === "overview" && <>
@@ -156,7 +190,9 @@ export default function Admin() {
             <div className="grid gap-3">{auctions.data?.map((item) => <article key={item.id} className="grid gap-4 rounded-2xl border border-[#e6dccb] bg-[#fffdf8] p-4 sm:grid-cols-[64px_minmax(0,1fr)_auto] sm:items-center"><img src={item.imagePath} alt="" className="h-16 w-16 rounded-xl object-cover" /><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h3 className="truncate font-semibold">{item.title}</h3><span className={`rounded-full px-2 py-1 text-[10px] font-extrabold uppercase ${item.status === "live" ? "bg-[#e4f0e2] text-[#0b5f4a]" : item.status === "closed" ? "bg-[#f3e8dc] text-[#9b5921]" : "bg-[#f1eee5] text-[#737e73]"}`}>{item.startsAt.getTime() > Date.now() && item.status === "live" ? "upcoming" : item.status}</span></div><p className="mt-1 text-xs text-[#737e73]">{item.category} · {item.sellerName} · fee {item.bidFee} ETB · {item.maxBidsPerUser} bids/user</p><p className="mt-1 text-xs text-[#879086]">Starts {item.startsAt.toLocaleString()} · Ends {item.endsAt.toLocaleString()}</p></div><div className="flex gap-2">{item.status === "draft" && <button disabled={publishAuction.isPending} onClick={() => publishAuction.mutate({ auctionId: item.id })} className="rounded-full border border-[#c9d7c9] px-3 py-2 text-xs font-bold text-[#0b5f4a]">Publish</button>}{item.status === "live" && <button disabled={closeAuction.isPending} onClick={() => closeSelectedAuction(item.id, item.title)} className="rounded-full border border-[#e4c8a8] px-3 py-2 text-xs font-bold text-[#9a5c24]">Close + calculate</button>}</div></article>)}{auctions.isLoading && <p className="p-8 text-center text-sm text-[#737e73]">Loading auctions…</p>}{auctions.data?.length === 0 && <p className="rounded-2xl border border-dashed border-[#d7d8c9] p-8 text-center text-sm text-[#737e73]">No auctions found.</p>}</div>
           </>}
 
-          {tab === "users" && <section className="grid gap-3">{users.data?.map((item) => <article key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#e6dccb] bg-[#fffdf8] p-4"><div><strong>{item.name || "Cherta member"}</strong><p className="text-sm text-[#737e73]">{item.email || "No email"}</p></div><div className="text-right text-xs text-[#737e73]"><span className="rounded-full bg-[#e8f0e4] px-2 py-1 font-bold text-[#0b5f4a]">{item.role}</span><p className="mt-2">Last sign-in {item.lastSignedIn.toLocaleString()}</p></div></article>)}{users.isLoading && <p className="p-8 text-center text-sm">Loading users…</p>}{users.data?.length === 0 && <p className="rounded-2xl border border-dashed border-[#d7d8c9] p-8 text-center">No user records yet.</p>}</section>}
+          {tab === "users" && <section className="grid gap-3">{users.data?.map((item) => <article key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#e6dccb] bg-[#fffdf8] p-4"><div><strong>{item.name || "Cherta member"}</strong><p className="text-sm text-[#737e73]">{item.email || "No email"}</p><p className="mt-2 text-xs text-[#737e73]">Last sign-in {item.lastSignedIn.toLocaleString()}</p></div><div className="flex items-center gap-3"><span className="rounded-full bg-[#e8f0e4] px-2 py-1 text-xs font-bold text-[#0b5f4a]">{item.role}</span><span className={`rounded-full px-2 py-1 text-xs font-bold ${item.status === "suspended" ? "bg-[#fae4de] text-[#9b3929]" : "bg-[#e8f0e4] text-[#0b5f4a]"}`}>{item.status}</span>{item.role !== "admin" && item.email !== user.email && <button disabled={updateUserStatus.isPending} onClick={() => changeAccountStatus(item)} className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-bold ${item.status === "suspended" ? "border-[#b6d1c0] text-[#0b5f4a]" : "border-[#e2b5a9] text-[#9b3929]"}`}>{item.status === "suspended" ? <UserRoundCheck size={14} /> : <Ban size={14} />}{item.status === "suspended" ? "Reactivate" : "Suspend"}</button>}</div></article>)}{users.isLoading && <p className="p-8 text-center text-sm">Loading users…</p>}{users.data?.length === 0 && <p className="rounded-2xl border border-dashed border-[#d7d8c9] p-8 text-center">No user records yet.</p>}</section>}
+
+          {tab === "reports" && <section className="grid gap-3">{reports.data?.map((item) => <article key={item.id} className="rounded-2xl border border-[#e6dccb] bg-[#fffdf8] p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-[#f1eee5] px-2 py-1 text-[10px] font-extrabold uppercase tracking-wide">{item.category}</span><span className="text-xs text-[#737e73]">Report #{item.id} · {item.createdAt.toLocaleString()}</span></div><h3 className="mt-2 text-lg font-bold">{item.subject}</h3><p className="mt-1 text-xs text-[#737e73]">From {item.reporterName || "Cherta member"} · {item.reporterEmail || `user #${item.reporterId}`}{item.targetType ? ` · About ${item.targetType} ${item.targetId || ""}` : ""}</p></div><select aria-label={`Status for report ${item.id}`} value={reportStatuses[item.id] ?? item.status} onChange={(event) => setReportStatuses((current) => ({ ...current, [item.id]: event.target.value as "open" | "reviewing" | "resolved" | "dismissed" }))} className="rounded-lg border border-[#d7d8c9] bg-white px-3 py-2 text-xs font-bold"><option value="open">Open</option><option value="reviewing">Reviewing</option><option value="resolved">Resolved</option><option value="dismissed">Dismissed</option></select></div><p className="mt-4 whitespace-pre-wrap rounded-xl bg-[#f7f4eb] p-4 text-sm leading-6 text-[#46534a]">{item.details}</p><label className="mt-4 grid gap-1 text-xs font-bold text-[#68766b]">Internal admin notes<textarea rows={3} maxLength={2000} value={reportNotes[item.id] ?? item.adminNotes ?? ""} onChange={(event) => setReportNotes((current) => ({ ...current, [item.id]: event.target.value }))} placeholder="Record the resolution or follow-up…" className="rounded-lg border border-[#d7d8c9] bg-white px-3 py-2 text-sm font-normal" /></label><div className="mt-3 flex justify-end"><button disabled={reviewReport.isPending} onClick={() => saveReportReview(item.id, item.status, item.adminNotes)} className="rounded-full bg-[#0b5f4a] px-4 py-2 text-xs font-bold text-white disabled:opacity-60">{reviewReport.isPending ? "Saving…" : "Save review"}</button></div></article>)}{reports.isLoading && <p className="p-8 text-center text-sm">Loading reports…</p>}{reports.data?.length === 0 && <p className="rounded-2xl border border-dashed border-[#d7d8c9] p-8 text-center">No reports have been submitted.</p>}</section>}
 
           {tab === "payments" && <><div className="mb-4 rounded-xl border border-[#ead4ad] bg-[#fff5db] p-4 text-sm leading-6 text-[#74562a]">Payment orders are shown for monitoring. Telebirr callbacks are only recorded as pending verification; no callback can mark a payment paid until a provider-specific signature/transaction check is implemented. Sandbox settlement is non-production only.</div><section className="grid gap-3">{payments.data?.map((item) => <article key={item.id} className="grid gap-2 rounded-2xl border border-[#e6dccb] bg-[#fffdf8] p-4 sm:grid-cols-[1fr_auto]"><div><strong>{item.auctionTitle}</strong><p className="text-xs text-[#737e73]">{item.userEmail} · {item.provider} · {item.merchantReference}</p><p className="mt-1 text-xs text-[#879086]">{item.createdAt.toLocaleString()}</p></div><div className="text-right"><strong>{item.amount} {item.currency}</strong><span className={`mt-1 block text-xs font-bold uppercase ${item.status === "paid" ? "text-[#0b5f4a]" : "text-[#9a5c24]"}`}>{item.status}</span></div></article>)}{payments.isLoading && <p className="p-8 text-center text-sm">Loading payments…</p>}{payments.data?.length === 0 && <p className="rounded-2xl border border-dashed border-[#d7d8c9] p-8 text-center">No payment orders yet.</p>}</section></>}
 
