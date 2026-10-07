@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { cert, initializeApp, type ServiceAccount } from "firebase-admin/app";
+import { cert, deleteApp, initializeApp, type ServiceAccount } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
 async function main() {
   const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
@@ -21,6 +22,7 @@ async function main() {
     projectId: expectedProjectId,
   });
   const auth = getAuth(app);
+  const firestore = getFirestore(app);
   let user;
   try {
     user = await auth.getUserByEmail(email);
@@ -31,8 +33,20 @@ async function main() {
   }
 
   await auth.setCustomUserClaims(user.uid, { ...user.customClaims, admin: true });
+  const profile = firestore.collection("users").doc(user.uid);
+  const existingProfile = await profile.get();
+  await profile.set({
+    uid: user.uid,
+    name: user.displayName || "Tesaka Administrator",
+    email: user.email ?? email,
+    role: "admin",
+    status: "active",
+    ...(existingProfile.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+    updatedAt: FieldValue.serverTimestamp(),
+    lastSignedIn: FieldValue.serverTimestamp(),
+  }, { merge: true });
   console.log(JSON.stringify({ uid: user.uid, email: user.email, adminClaimAssigned: true }));
-  await app.delete();
+  await deleteApp(app);
 }
 
 main().catch((error: unknown) => {

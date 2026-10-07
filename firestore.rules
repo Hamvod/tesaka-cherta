@@ -1,20 +1,222 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{userId} {
-      allow read, create, update: if request.auth != null && request.auth.uid == userId;
+    function signedIn() { return request.auth != null; }
+    function userProfilePath(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function activeUser(uid) {
+      return !exists(userProfilePath(uid)) || get(userProfilePath(uid)).data.status != 'suspended';
+    }
+    function admin() {
+      return signedIn() && request.auth.token.admin == true && activeUser(request.auth.uid);
+    }
+    function activeOwner(uid) {
+      return signedIn() && request.auth.uid == uid && activeUser(uid);
+    }
+    function auctionPath(auctionId) { return /databases/$(database)/documents/auctions/$(auctionId); }
+    function paymentPath(uid, paymentId) { return /databases/$(database)/documents/users/$(uid)/payments/$(paymentId); }
+    function userBidPath(uid, bidId) { return /databases/$(database)/documents/users/$(uid)/bids/$(bidId); }
+    function publicEntryPath(auctionId, bidId) { return /databases/$(database)/documents/auctions/$(auctionId)/entries/$(bidId); }
+    function bidderCounterPath(auctionId, uid) { return /databases/$(database)/documents/auctions/$(auctionId)/bidderCounters/$(uid); }
+    function validPayment(uid, auctionId, paymentId) {
+      let payment = getAfter(paymentPath(uid, paymentId)).data;
+      return existsAfter(paymentPath(uid, paymentId))
+        && payment.uid == uid
+        && payment.auctionId == auctionId
+        && payment.amount == get(auctionPath(auctionId)).data.bidFee
+        && payment.status == 'paid'
+        && payment.used == true;
+    }
+    function validCounter(uid, auctionId, bidId) {
+      let counter = getAfter(bidderCounterPath(auctionId, uid)).data;
+      return existsAfter(bidderCounterPath(auctionId, uid))
+        && counter.uid == uid
+        && counter.lastBidId == bidId
+        && counter.count is int
+        && counter.count > 0
+        && counter.count <= get(auctionPath(auctionId)).data.maxBidsPerUser;
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || admin());
+      allow create: if activeOwner(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.role == 'user'
+        && request.resource.data.status == 'active'
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'city', 'language', 'marketingOptIn', 'role', 'status', 'createdAt', 'updatedAt', 'lastSignedIn']);
+      allow update: if admin() || (activeOwner(uid)
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'email', 'phone', 'city', 'language', 'marketingOptIn', 'updatedAt', 'lastSignedIn'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastSignedIn']) || request.resource.data.lastSignedIn == request.time));
       allow delete: if false;
 
       match /watchlist/{auctionId} {
-        allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+        allow read: if signedIn() && (request.auth.uid == uid || admin());
+        allow create, update: if activeOwner(uid)
+          && request.resource.data.auctionId == auctionId
+          && request.resource.data.title is string
+          && request.resource.data.title.size() <= 220
+          && request.resource.data.keys().hasOnly(['auctionId', 'title', 'imagePath', 'endsAt', 'createdAt']);
+        allow delete: if activeOwner(uid);
       }
 
-      // Bids are readable by their owner. Writes must go through a trusted,
-      // payment-verifying backend rather than directly from a browser client.
-      match /bids/{bidId} {
-        allow read: if request.auth != null && request.auth.uid == userId;
-        allow write: if false;
+      match /payments/{paymentId} {
+        allow read: if signedIn() && (request.auth.uid == uid || admin());
+        allow create: if admin()
+          && request.resource.data.uid == uid
+          && request.resource.data.used == false
+          && request.resource.data.status in ['pending', 'paid']
+          && request.resource.data.providerReference is string;
+        allow update: if admin() || (activeOwner(uid)
+          && resource.data.uid == uid
+          && resource.data.status == 'paid'
+          && resource.data.used == false
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'usedAt'])
+          && request.resource.data.used == true
+          && request.resource.data.usedAt == request.time
+          && existsAfter(publicEntryPath(resource.data.auctionId, paymentId))
+          && existsAfter(userBidPath(uid, paymentId))
+          && validCounter(uid, resource.data.auctionId, paymentId));
+        allow delete: if false;
       }
+
+      match /bids/{bidId} {
+        allow read: if signedIn() && (request.auth.uid == uid || admin());
+        allow create: if activeOwner(uid)
+          && request.resource.data.uid == uid
+          && request.resource.data.paymentId == bidId
+          && request.resource.data.amount is number
+          && request.resource.data.amount > 0
+          && request.resource.data.amount * 100 % 1 == 0
+          && request.resource.data.auctionId is string
+          && exists(auctionPath(request.resource.data.auctionId))
+          && get(auctionPath(request.resource.data.auctionId)).data.status == 'live'
+          && get(auctionPath(request.resource.data.auctionId)).data.startsAt <= request.time
+          && get(auctionPath(request.resource.data.auctionId)).data.endsAt > request.time
+          && request.resource.data.amount >= get(auctionPath(request.resource.data.auctionId)).data.minBid
+          && request.resource.data.amount <= get(auctionPath(request.resource.data.auctionId)).data.maxBid
+          && validPayment(uid, request.resource.data.auctionId, bidId)
+          && validCounter(uid, request.resource.data.auctionId, bidId)
+          && existsAfter(publicEntryPath(request.resource.data.auctionId, bidId))
+          && getAfter(publicEntryPath(request.resource.data.auctionId, bidId)).data.amount == request.resource.data.amount
+          && request.resource.data.keys().hasOnly(['uid', 'auctionId', 'amount', 'paymentId', 'auctionTitle', 'auctionImagePath', 'auctionStatus', 'createdAt']);
+        allow update, delete: if false;
+      }
+    }
+
+    match /auctions/{auctionId} {
+      allow read: if admin() || resource.data.status in ['live', 'closed'];
+      allow create: if admin()
+        && request.resource.data.status == 'draft'
+        && request.resource.data.title is string
+        && request.resource.data.bidFee is number
+        && request.resource.data.bidFee > 0
+        && request.resource.data.minBid is number
+        && request.resource.data.minBid > 0
+        && request.resource.data.maxBid is number
+        && request.resource.data.maxBid >= request.resource.data.minBid
+        && request.resource.data.maxBidsPerUser is int
+        && request.resource.data.maxBidsPerUser >= 1
+        && request.resource.data.maxBidsPerUser <= 100
+        && request.resource.data.startsAt < request.resource.data.endsAt
+        && request.resource.data.bidCount == 0;
+      allow update: if (admin()
+        && (request.resource.data.status != 'closed'
+          || resource.data.status == 'closed'
+          || (resource.data.status == 'live' && request.time >= resource.data.endsAt))) || (signedIn()
+        && activeUser(request.auth.uid)
+        && resource.data.status == 'live'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bidCount', 'lastBidId', 'updatedAt'])
+        && request.resource.data.bidCount == resource.data.bidCount + 1
+        && request.resource.data.lastBidId is string
+        && existsAfter(userBidPath(request.auth.uid, request.resource.data.lastBidId))
+        && getAfter(userBidPath(request.auth.uid, request.resource.data.lastBidId)).data.auctionId == auctionId
+        && existsAfter(publicEntryPath(auctionId, request.resource.data.lastBidId))
+        && getAfter(publicEntryPath(auctionId, request.resource.data.lastBidId)).data.amount == getAfter(userBidPath(request.auth.uid, request.resource.data.lastBidId)).data.amount
+        && validPayment(request.auth.uid, auctionId, request.resource.data.lastBidId)
+        && validCounter(request.auth.uid, auctionId, request.resource.data.lastBidId));
+      allow delete: if admin() && resource.data.status == 'draft';
+
+      match /entries/{bidId} {
+        allow read: if admin();
+        allow create: if signedIn()
+          && activeUser(request.auth.uid)
+          && get(auctionPath(auctionId)).data.status == 'live'
+          && get(auctionPath(auctionId)).data.startsAt <= request.time
+          && get(auctionPath(auctionId)).data.endsAt > request.time
+          && request.resource.data.auctionId == auctionId
+          && request.resource.data.amount is number
+          && request.resource.data.amount * 100 % 1 == 0
+          && request.resource.data.amount >= get(auctionPath(auctionId)).data.minBid
+          && request.resource.data.amount <= get(auctionPath(auctionId)).data.maxBid
+          && existsAfter(userBidPath(request.auth.uid, bidId))
+          && getAfter(userBidPath(request.auth.uid, bidId)).data.auctionId == auctionId
+          && getAfter(userBidPath(request.auth.uid, bidId)).data.amount == request.resource.data.amount
+          && validPayment(request.auth.uid, auctionId, bidId)
+          && validCounter(request.auth.uid, auctionId, bidId)
+          && request.resource.data.keys().hasOnly(['auctionId', 'amount', 'createdAt']);
+        allow update, delete: if false;
+      }
+
+      match /bidderCounters/{uid} {
+        allow read: if admin() || (signedIn() && request.auth.uid == uid);
+        allow create: if activeOwner(uid)
+          && request.resource.data.uid == uid
+          && request.resource.data.count == 1
+          && request.resource.data.lastBidId is string
+          && request.resource.data.keys().hasOnly(['uid', 'count', 'lastBidId', 'updatedAt'])
+          && existsAfter(userBidPath(uid, request.resource.data.lastBidId))
+          && existsAfter(publicEntryPath(auctionId, request.resource.data.lastBidId))
+          && validPayment(uid, auctionId, request.resource.data.lastBidId)
+          && validCounter(uid, auctionId, request.resource.data.lastBidId);
+        allow update: if activeOwner(uid)
+          && resource.data.uid == uid
+          && request.resource.data.uid == uid
+          && request.resource.data.count == resource.data.count + 1
+          && request.resource.data.count <= get(auctionPath(auctionId)).data.maxBidsPerUser
+          && request.resource.data.lastBidId is string
+          && request.resource.data.keys().hasOnly(['uid', 'count', 'lastBidId', 'updatedAt'])
+          && existsAfter(userBidPath(uid, request.resource.data.lastBidId))
+          && existsAfter(publicEntryPath(auctionId, request.resource.data.lastBidId))
+          && validPayment(uid, auctionId, request.resource.data.lastBidId)
+          && validCounter(uid, auctionId, request.resource.data.lastBidId);
+        allow delete: if false;
+      }
+    }
+
+    match /results/{auctionId} {
+      allow read: if true;
+      allow create, update: if admin();
+      allow delete: if false;
+    }
+
+    match /reports/{reportId} {
+      allow read: if admin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow create: if signedIn()
+        && activeUser(request.auth.uid)
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'open'
+        && request.resource.data.adminNotes == null
+        && request.resource.data.subject is string
+        && request.resource.data.subject.size() >= 4
+        && request.resource.data.subject.size() <= 160
+        && request.resource.data.details is string
+        && request.resource.data.details.size() >= 20
+        && request.resource.data.details.size() <= 4000
+        && request.resource.data.category in ['account', 'auction', 'payment', 'safety', 'other']
+        && (request.resource.data.targetType == null || request.resource.data.targetType is string)
+        && (request.resource.data.targetId == null || request.resource.data.targetId is string)
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.keys().hasOnly(['uid', 'category', 'subject', 'details', 'targetType', 'targetId', 'status', 'adminNotes', 'createdAt', 'updatedAt']);
+      allow update: if admin();
+      allow delete: if false;
+    }
+
+    match /auditLogs/{eventId} {
+      allow read: if admin();
+      allow create, update, delete: if admin();
     }
   }
 }

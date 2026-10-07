@@ -76,9 +76,9 @@ export type AIChatBoxProps = {
  *     { role: "system", content: "You are a helpful assistant." }
  *   ]);
  *
- *   const chatMutation = trpc.ai.chat.useMutation({
+ *   const chatMutation = sendChatMessage({
  *     onSuccess: (response) => {
- *       // Assuming your tRPC endpoint returns the AI response as a string
+ *       // Assuming the chat service returns the AI response as a string
  *       setMessages(prev => [...prev, {
  *         role: "assistant",
  *         content: response

@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
-import { trpc } from "@/lib/trpc";
-import { toggleSavedAuction } from "@/lib/firebaseData";
+import { listAvailablePayments, listPublicAuctions, listPublicResults, submitFirestoreBid, toggleSavedAuction } from "@/lib/firebaseData";
 import { useLocation } from "wouter";
 import {
   ArrowUpRight,
@@ -35,7 +35,6 @@ type Category = "All" | "Phones" | "Home tech" | "Audio";
 
 type Auction = {
   id: string;
-  dbId?: number;
   title: string;
   amTitle: string;
   category: Exclude<Category, "All">;
@@ -48,6 +47,7 @@ type Auction = {
   minBid: number;
   maxBid: number;
   startsAt: Date;
+  endsAt: Date;
   status: "live" | "upcoming";
   sellerName: string;
   accent: string;
@@ -178,15 +178,11 @@ function AuctionCard({ auction, language, onOpen, onSave }: { auction: Auction; 
 }
 
 export default function Home() {
-  const { isAuthenticated, isAdmin, user } = useAuth();
+  const { isAuthenticated, isAdmin, isSuspended, user } = useAuth();
   const [, setLocation] = useLocation();
-  const auctionQuery = trpc.auction.list.useQuery();
-  const submitBidMutation = trpc.auction.submitBid.useMutation();
-  const preparePaymentMutation = trpc.payment.prepareTelebirr.useMutation();
-  const completeSandboxPaymentMutation = trpc.payment.completeSandbox.useMutation();
-  const paymentModeQuery = trpc.payment.mode.useQuery();
-  const resultsQuery = trpc.auction.results.useQuery();
-  const utils = trpc.useUtils();
+  const queryClient = useQueryClient();
+  const auctionQuery = useQuery({ queryKey: ["firestore-auctions"], queryFn: listPublicAuctions });
+  const resultsQuery = useQuery({ queryKey: ["firestore-results"], queryFn: listPublicResults });
   const [language, setLanguage] = useState<Language>(() => localStorage.getItem("cherta-language") === "am" ? "am" : "en");
   const [now, setNow] = useState(() => Date.now());
   const [category, setCategory] = useState<Category>("All");
@@ -194,6 +190,12 @@ export default function Home() {
   const [selectedAuction, setSelectedAuction] = useState<Auction | null>(null);
   const [bidAmount, setBidAmount] = useState("2.50");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [bidSubmitting, setBidSubmitting] = useState(false);
+  const availablePaymentsQuery = useQuery({
+    queryKey: ["firestore-payments-available", user?.uid, selectedAuction?.id],
+    queryFn: () => listAvailablePayments(user!.uid, selectedAuction!.id),
+    enabled: Boolean(user && selectedAuction),
+  });
   const t = copy[language];
 
   useEffect(() => {
@@ -212,8 +214,7 @@ export default function Home() {
       const hours = Math.floor((remaining % 86400000) / 3600000);
       const minutes = Math.floor((remaining % 3600000) / 60000);
       return {
-      id: String(auction.id),
-      dbId: auction.id,
+      id: auction.id,
       title: auction.title,
       amTitle: auction.title,
       category: auction.category as Exclude<Category, "All">,
@@ -226,6 +227,7 @@ export default function Home() {
       minBid: Number(auction.minBid),
       maxBid: Number(auction.maxBid),
       startsAt: auction.startsAt,
+      endsAt: auction.endsAt,
       status: auction.startsAt.getTime() > now ? "upcoming" : "live",
       sellerName: auction.sellerName,
       accent: index === 0 ? "emerald" : index === 1 ? "amber" : "plum",
@@ -251,14 +253,12 @@ export default function Home() {
       return;
     }
     if (!user) return;
-    const parsedEnd = new Date(auction.ends);
-    const endsAt = Number.isNaN(parsedEnd.getTime()) ? new Date(Date.now() + 24 * 60 * 60 * 1000) : parsedEnd;
     try {
       const saved = await toggleSavedAuction(user.uid, {
-        auctionId: auction.dbId ?? auction.id,
+        auctionId: auction.id,
         title: auction.title,
         imagePath: auction.image,
-        endsAt,
+        endsAt: auction.endsAt,
       });
       toast.success(saved ? "Saved to your Firestore watchlist" : "Removed from your watchlist");
     } catch (error) {
@@ -266,15 +266,16 @@ export default function Home() {
     }
   };
 
-  const handleBid = () => {
+  const handleBid = async () => {
     if (!selectedAuction) return;
     if (!isAuthenticated) {
       setSelectedAuction(null);
       setLocation("/signin");
       return;
     }
-    if (!selectedAuction.dbId) {
-      toast.error("This auction is not connected to the transaction database.");
+    if (!user) return;
+    if (isSuspended) {
+      toast.error("This account is suspended and cannot place bids.");
       return;
     }
     if (selectedAuction.status !== "live") {
@@ -290,31 +291,26 @@ export default function Home() {
       toast.error(`Bid amount must be between ${selectedAuction.minBid.toFixed(2)} and ${selectedAuction.maxBid.toFixed(2)} ETB.`);
       return;
     }
-    const auctionId = selectedAuction.dbId;
-    preparePaymentMutation.mutate({ auctionId: selectedAuction.dbId }, {
-      onSuccess: (order) => {
-        if (order.sandboxEnabled && order.id) {
-          completeSandboxPaymentMutation.mutate({ paymentOrderId: order.id }, {
-            onSuccess: () => submitBidMutation.mutate({ auctionId, amount, paymentOrderId: order.id! }, {
-              onSuccess: async () => {
-                toast.success("Test bid accepted. No real payment was taken.");
-                setSelectedAuction(null);
-                await Promise.all([utils.auction.list.invalidate(), utils.auction.myBids.invalidate(), utils.auction.results.invalidate()]);
-              },
-              onError: (error) => toast.error(error.message),
-            }),
-            onError: (error) => toast.error(error.message),
-          });
-          return;
-        }
-        if (order.checkoutUrl) {
-          window.location.assign(order.checkoutUrl);
-          return;
-        }
-        toast.info("A payment order was created, but no verified Telebirr checkout is configured yet.", { description: `Reference ${order.merchantReference}; this pending order cannot activate a bid.` });
-      },
-      onError: (error) => toast.error(error.message || "Could not prepare Telebirr payment"),
-    });
+    const payment = availablePaymentsQuery.data?.[0];
+    if (!payment) {
+      toast.info("A bid needs an administrator-verified payment first.", { description: "Contact the Cherta administrator with your payment reference. The site does not process payments directly." });
+      return;
+    }
+    setBidSubmitting(true);
+    try {
+      await submitFirestoreBid(user.uid, selectedAuction.id, payment.id, amount);
+      toast.success("Bid submitted and recorded in Firestore.");
+      setSelectedAuction(null);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["firestore-auctions"] }),
+        queryClient.invalidateQueries({ queryKey: ["firestore-account", user.uid] }),
+        queryClient.invalidateQueries({ queryKey: ["firestore-payments-available", user.uid] }),
+      ]);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not submit bid.");
+    } finally {
+      setBidSubmitting(false);
+    }
   };
 
   const showHowItWorks = () => {
@@ -397,7 +393,7 @@ export default function Home() {
 
       <footer className="site-footer"><div className="container footer-grid"><div><a href="#top" className="brand-lockup footer-brand"><BrandMark /><span><strong>Tesaka</strong><em>Cherta</em></span></a><p>Fair play, made local.<br />ግልጽ ጨረታ፣ ለሁሉም።</p></div><div><h4>Explore</h4><a href="#auctions">Live auctions</a><a href="#winners">Winners</a><a href="#how-it-works">How it works</a></div><div><h4>Trust</h4><a href="#faq">FAQ & rules</a><a href="#faq">Responsible play</a><a href="#faq">Contact support</a></div><div className="footer-note"><span className="footer-dot" /> Built for the next smart move.<small>© 2026 Tesaka Cherta · Addis Ababa, Ethiopia</small></div></div></footer>
 
-      {selectedAuction && <div className="modal-backdrop" onClick={() => setSelectedAuction(null)}><div className="auction-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedAuction(null)} aria-label="Close"><X size={19} /></button><div className="modal-image"><img src={selectedAuction.image} alt={selectedAuction.title} /></div><div className="modal-content"><span className="status-pill"><span className="status-dot" /> {selectedAuction.status === "live" ? t.livePill : "UPCOMING"} · #{selectedAuction.code}</span><h2>{selectedAuction.title}</h2><p className="modal-seller"><ShieldCheck size={15} /> {selectedAuction.sellerName} · {t.seller}</p><div className="modal-rule"><div className="modal-rule-icon"><CheckCircle2 size={17} /></div><div><strong>Lowest unique bid</strong><span>The lowest valid amount submitted exactly once wins. Duplicate amounts are not unique.</span></div></div><div className="modal-stats"><div><small>{selectedAuction.status === "live" ? t.closing : "Opens"}</small><strong>{selectedAuction.status === "live" ? selectedAuction.ends : selectedAuction.startsAt.toLocaleString()}</strong></div><div><small>{t.bidFee}</small><strong>{selectedAuction.fee} ETB</strong></div><div><small>Bid limits</small><strong>{selectedAuction.minBid.toFixed(2)}–{selectedAuction.maxBid.toFixed(2)} ETB</strong></div></div><label className="bid-label">{t.amount}<div className="bid-input-wrap"><input value={bidAmount} onChange={(event) => setBidAmount(event.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /><span>ETB</span></div></label><div className="modal-actions"><button className="primary-button btn-spring" onClick={handleBid} disabled={selectedAuction.status !== "live" || submitBidMutation.isPending || preparePaymentMutation.isPending || completeSandboxPaymentMutation.isPending}>{preparePaymentMutation.isPending ? "Preparing payment…" : completeSandboxPaymentMutation.isPending ? "Settling test payment…" : submitBidMutation.isPending ? "Submitting bid…" : t.submit} <ArrowUpRight size={16} /></button><button className="cancel-button" onClick={() => setSelectedAuction(null)}>{t.cancel}</button></div><small className="demo-note">{!isAuthenticated ? "Sign in is required to bid." : paymentModeQuery.data?.sandboxEnabled ? "SANDBOX: test payment only; no real money is charged." : "Live bidding stays blocked until verified Telebirr checkout is configured. A pending order does not activate a bid."}</small></div></div></div>}
+      {selectedAuction && <div className="modal-backdrop" onClick={() => setSelectedAuction(null)}><div className="auction-modal" onClick={(event) => event.stopPropagation()}><button className="modal-close" onClick={() => setSelectedAuction(null)} aria-label="Close"><X size={19} /></button><div className="modal-image"><img src={selectedAuction.image} alt={selectedAuction.title} /></div><div className="modal-content"><span className="status-pill"><span className="status-dot" /> {selectedAuction.status === "live" ? t.livePill : "UPCOMING"} · #{selectedAuction.code}</span><h2>{selectedAuction.title}</h2><p className="modal-seller"><ShieldCheck size={15} /> {selectedAuction.sellerName} · {t.seller}</p><div className="modal-rule"><div className="modal-rule-icon"><CheckCircle2 size={17} /></div><div><strong>Lowest unique bid</strong><span>The lowest valid amount submitted exactly once wins. Duplicate amounts are not unique.</span></div></div><div className="modal-stats"><div><small>{selectedAuction.status === "live" ? t.closing : "Opens"}</small><strong>{selectedAuction.status === "live" ? selectedAuction.ends : selectedAuction.startsAt.toLocaleString()}</strong></div><div><small>{t.bidFee}</small><strong>{selectedAuction.fee} ETB</strong></div><div><small>Bid limits</small><strong>{selectedAuction.minBid.toFixed(2)}–{selectedAuction.maxBid.toFixed(2)} ETB</strong></div></div><label className="bid-label">{t.amount}<div className="bid-input-wrap"><input value={bidAmount} onChange={(event) => setBidAmount(event.target.value.replace(/[^0-9.]/g, ""))} inputMode="decimal" /><span>ETB</span></div></label><div className="modal-actions"><button className="primary-button btn-spring" onClick={() => void handleBid()} disabled={selectedAuction.status !== "live" || bidSubmitting || isSuspended}>{bidSubmitting ? "Submitting bid…" : t.submit} <ArrowUpRight size={16} /></button><button className="cancel-button" onClick={() => setSelectedAuction(null)}>{t.cancel}</button></div><small className="demo-note">{!isAuthenticated ? "Sign in is required to bid." : isSuspended ? "This account is suspended." : availablePaymentsQuery.isLoading ? "Checking for administrator-verified payment…" : availablePaymentsQuery.data?.length ? "A verified payment is available. One payment can be used for one bid." : "Payment processing is not connected. An administrator must verify and record your payment before bidding."}</small></div></div></div>}
     </div>
   );
 }

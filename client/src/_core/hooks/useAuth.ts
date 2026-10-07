@@ -1,7 +1,8 @@
 import { getIdTokenResult, onIdTokenChanged, signOut, type User as FirebaseUser } from "firebase/auth";
+import { doc, onSnapshot } from "firebase/firestore";
 import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { auth } from "@/lib/firebase";
+import { auth, firestore } from "@/lib/firebase";
 import { ensureUserDocument } from "@/lib/firebaseData";
 
 type CurrentUser = {
@@ -35,22 +36,32 @@ export function useAuth(options?: UseAuthOptions) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isSuspended, setIsSuspended] = useState(false);
 
   useEffect(() => {
     let active = true;
     let generation = 0;
+    let stopProfile: (() => void) | undefined;
     const unsubscribe = onIdTokenChanged(auth, (nextUser) => {
       const currentGeneration = ++generation;
+      stopProfile?.();
+      stopProfile = undefined;
       setFirebaseUser(nextUser);
       setLoading(true);
       if (!nextUser) {
         setIsAdmin(false);
+        setIsSuspended(false);
         setError(null);
         setLoading(false);
         return;
       }
       void ensureUserDocument(nextUser).catch((profileError: unknown) => {
         console.error("[Firestore] Could not initialize the user profile", profileError);
+      });
+      stopProfile = onSnapshot(doc(firestore, "users", nextUser.uid), (profile) => {
+        if (active && currentGeneration === generation) setIsSuspended(profile.data()?.status === "suspended");
+      }, (profileError) => {
+        console.error("[Firestore] Could not read account status", profileError);
       });
       void getIdTokenResult(nextUser).then((tokenResult) => {
         if (!active || currentGeneration !== generation) return;
@@ -67,10 +78,12 @@ export function useAuth(options?: UseAuthOptions) {
       setError(authError);
       setFirebaseUser(null);
       setIsAdmin(false);
+      setIsSuspended(false);
       setLoading(false);
     });
     return () => {
       active = false;
+      stopProfile?.();
       unsubscribe();
     };
   }, []);
@@ -91,6 +104,7 @@ export function useAuth(options?: UseAuthOptions) {
     loading,
     error,
     isAdmin,
+    isSuspended,
     isAuthenticated: Boolean(user),
     refresh: async () => auth.currentUser?.reload(),
     logout,
