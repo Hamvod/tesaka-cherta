@@ -1,10 +1,23 @@
 import { createHash } from "node:crypto";
 import { getAuth } from "firebase-admin/auth";
+import { getStorage } from "firebase-admin/storage";
 import { FieldValue } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
-import { db, finiteNumber, requireActive, requireAdmin, requireCaller, requireUser, serverTimestamp, text, writeAuditInTransaction } from "./common";
+import { CALLABLE_OPTIONS, db, finiteNumber, millisFromFirestore, requireActive, requireAdmin, requireCaller, requireUser, serverTimestamp, text, writeAuditInTransaction } from "./common";
 
-export const requestOwnerAccess = onCall(async (request) => {
+function paymentReferenceRef(reference: string) {
+  const normalized = reference.trim().replace(/\s+/g, "").toLowerCase();
+  return db.doc(`paymentReferences/${createHash("sha256").update(normalized).digest("hex")}`);
+}
+
+function paymentOcrHint(ocrText: string): "success_terms" | "failure_terms" | "unclear" {
+  const normalized = ocrText.toLowerCase();
+  if (/\b(failed|failure|declined|reversed|cancelled|canceled|unsuccessful)\b|\bnot\s+(?:successful|completed|paid)\b|(?:አልተሳካም|አልተፈጸመም|ተሰርዟል)/u.test(normalized)) return "failure_terms";
+  if (/\b(successful|success|completed|complete|paid|payment received|transfer successful)\b|(?:ተሳክቷል|ተጠናቋል|ተከፍሏል)/u.test(normalized)) return "success_terms";
+  return "unclear";
+}
+
+export const requestOwnerAccess = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireUser(request);
   if (caller.token.admin === true || caller.token.owner === true) throw new HttpsError("failed-precondition", "This account already has portal access.");
   const businessName = text(request.data.businessName, "Business or seller name", 120, 2);
@@ -31,7 +44,7 @@ export const requestOwnerAccess = onCall(async (request) => {
   return { status: "pending" };
 });
 
-export const reviewOwnerApplication = onCall(async (request) => {
+export const reviewOwnerApplication = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireAdmin(request);
   const uid = text(request.data.uid, "Applicant UID", 128, 5);
   const decision = request.data.decision;
@@ -64,7 +77,7 @@ export const reviewOwnerApplication = onCall(async (request) => {
   return { status: approved ? "approved" : "rejected", uid };
 });
 
-export const recordManualPayment = onCall(async (request) => {
+export const recordManualPayment = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireAdmin(request);
   const uid = text(request.data.uid, "Bidder UID", 128, 5);
   const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
@@ -73,8 +86,7 @@ export const recordManualPayment = onCall(async (request) => {
   if (status !== "pending" && status !== "paid") throw new HttpsError("invalid-argument", "Payment status must be pending or paid.");
   const userRef = db.doc(`users/${uid}`);
   const auctionRef = db.doc(`auctions/${auctionId}`);
-  const refHash = createHash("sha256").update(`${uid}|${auctionId}|${providerReference.toLowerCase()}`).digest("hex");
-  const uniqueRef = db.doc(`paymentReferences/${refHash}`);
+  const uniqueRef = paymentReferenceRef(providerReference);
   const paymentRef = db.collection(`users/${uid}/payments`).doc();
   await db.runTransaction(async (tx) => {
     const [user, auction, usedReference] = await Promise.all([tx.get(userRef), tx.get(auctionRef), tx.get(uniqueRef)]);
@@ -92,7 +104,108 @@ export const recordManualPayment = onCall(async (request) => {
   return { paymentId: paymentRef.id, status };
 });
 
-export const reviewReport = onCall(async (request) => {
+export const submitPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {
+  const caller = await requireUser(request);
+  const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
+  const provider = text(request.data.provider, "Payment provider", 80, 2);
+  const rawReference = typeof request.data.providerReference === "string" ? request.data.providerReference.trim() : "";
+  if (rawReference && (rawReference.length < 3 || rawReference.length > 160)) {
+    throw new HttpsError("invalid-argument", "Transaction number must be between 3 and 160 characters.");
+  }
+  const providerReference = rawReference;
+  const rawProofPath = typeof request.data.proofStoragePath === "string" ? request.data.proofStoragePath.trim() : "";
+  const proofStoragePath = rawProofPath || null;
+  const ocrText = typeof request.data.ocrText === "string" ? request.data.ocrText.trim().slice(0, 6000) : "";
+  if (!providerReference && !proofStoragePath) throw new HttpsError("invalid-argument", "Enter a transaction number or upload a receipt image.");
+
+  if (proofStoragePath) {
+    if (!proofStoragePath.startsWith(`payment-receipts/${caller.uid}/`) || proofStoragePath.includes("..")) {
+      throw new HttpsError("permission-denied", "The receipt must be uploaded to your own private receipt folder.");
+    }
+    try {
+      const file = getStorage().bucket().file(proofStoragePath);
+      const [exists] = await file.exists();
+      if (!exists) throw new HttpsError("failed-precondition", "Upload the receipt image before submitting it.");
+      const [metadata] = await file.getMetadata();
+      if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(String(metadata.contentType ?? "")) || Number(metadata.size ?? 0) > 5 * 1024 * 1024) {
+        throw new HttpsError("invalid-argument", "Receipt must be a JPEG, PNG, or WebP image no larger than 5 MB.");
+      }
+    } catch (error) {
+      if (error instanceof HttpsError) throw error;
+      throw new HttpsError("failed-precondition", "The uploaded receipt could not be checked. Please upload it again.");
+    }
+  }
+
+  const profileRef = db.doc(`users/${caller.uid}`);
+  const auctionRef = db.doc(`auctions/${auctionId}`);
+  const rateRef = db.doc(`rateLimits/payment-proof-${caller.uid}`);
+  const uniqueReference = providerReference ? paymentReferenceRef(providerReference) : null;
+  const paymentRef = db.collection(`users/${caller.uid}/payments`).doc();
+  const hint = paymentOcrHint(ocrText);
+  const hourBucket = Math.floor(Date.now() / 3_600_000);
+  await db.runTransaction(async (tx) => {
+    const [profile, auction, rate, duplicate] = await Promise.all([
+      tx.get(profileRef), tx.get(auctionRef), tx.get(rateRef), uniqueReference ? tx.get(uniqueReference) : Promise.resolve(null),
+    ]);
+    if (!profile.exists || profile.get("status") === "suspended") throw new HttpsError("permission-denied", "This account cannot submit payment proof.");
+    if (!auction.exists) throw new HttpsError("not-found", "Auction not found.");
+    if (!["published", "live"].includes(String(auction.get("status"))) || millisFromFirestore(auction.get("endsAt")) <= Date.now()) {
+      throw new HttpsError("failed-precondition", "Payment proof can only be submitted for an open auction.");
+    }
+    const amount = finiteNumber(auction.get("bidFee"), "Auction bid fee", 0, 1000000);
+    if (amount <= 0) throw new HttpsError("failed-precondition", "This auction does not require a payment fee.");
+    if (duplicate?.exists) throw new HttpsError("already-exists", "That transaction number has already been submitted.");
+    const previous = rate.data() ?? {};
+    const count = Number(previous.hourBucket) === hourBucket ? Number(previous.count ?? 0) + 1 : 1;
+    if (count > 5) throw new HttpsError("resource-exhausted", "You have reached the payment-proof submission limit. Try again later.");
+    tx.create(paymentRef, {
+      uid: caller.uid, auctionId, auctionTitle: String(auction.get("title") ?? "Auction"), amount,
+      provider, providerReference, source: "bidder_proof", proofStoragePath, ocrText: ocrText || null,
+      ocrStatusHint: hint, status: "pending", used: false, createdAt: serverTimestamp(), submittedBy: caller.uid,
+    });
+    if (uniqueReference) tx.create(uniqueReference, { uid: caller.uid, auctionId, paymentId: paymentRef.id, createdAt: serverTimestamp() });
+    tx.set(rateRef, { hourBucket, count, updatedAt: serverTimestamp() });
+    writeAuditInTransaction(tx, caller.uid, "payment.proof_submitted", "payment", paymentRef.id);
+  });
+  return { paymentId: paymentRef.id, status: "pending", ocrStatusHint: hint };
+});
+
+export const reviewPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {
+  const caller = await requireAdmin(request);
+  const uid = text(request.data.uid, "Bidder UID", 128, 5);
+  const paymentId = text(request.data.paymentId, "Payment ID", 128, 5);
+  const decision = request.data.decision;
+  if (decision !== "paid" && decision !== "failed") throw new HttpsError("invalid-argument", "Choose paid or failed.");
+  const note = typeof request.data.note === "string" ? request.data.note.trim().slice(0, 500) : "";
+  const paymentRef = db.doc(`users/${uid}/payments/${paymentId}`);
+  const notificationRef = db.doc(`users/${uid}/notifications/payment-review-${paymentId}`);
+  await db.runTransaction(async (tx) => {
+    const payment = await tx.get(paymentRef);
+    if (!payment.exists || payment.get("source") !== "bidder_proof") throw new HttpsError("not-found", "Submitted payment proof not found.");
+    if (payment.get("status") !== "pending" || payment.get("used") === true) throw new HttpsError("failed-precondition", "This payment proof is no longer pending review.");
+    if (decision === "paid") {
+      const auctionRef = db.doc(`auctions/${String(payment.get("auctionId") ?? "")}`);
+      const auction = await tx.get(auctionRef);
+      if (!auction.exists || !["published", "live"].includes(String(auction.get("status"))) || millisFromFirestore(auction.get("endsAt")) <= Date.now()) {
+        throw new HttpsError("failed-precondition", "The auction is no longer open; this payment proof cannot authorize a bid.");
+      }
+      if (Number(auction.get("bidFee")) !== Number(payment.get("amount"))) throw new HttpsError("failed-precondition", "The submitted payment amount no longer matches the auction fee.");
+    }
+    tx.update(paymentRef, {
+      status: decision, reviewedBy: caller.uid, reviewedAt: serverTimestamp(), verificationNote: note || null,
+      ...(decision === "paid" ? { verifiedBy: caller.uid, verifiedAt: serverTimestamp() } : {}),
+    });
+    tx.set(notificationRef, {
+      type: "payment_review", titleKey: decision === "paid" ? "notice.paymentApproved.title" : "notice.paymentRejected.title",
+      bodyKey: decision === "paid" ? "notice.paymentApproved.body" : "notice.paymentRejected.body",
+      params: { auction: String(payment.get("auctionTitle") ?? "Auction"), note }, createdAt: serverTimestamp(), readAt: null,
+    });
+    writeAuditInTransaction(tx, caller.uid, `payment.proof_${decision}`, "payment", paymentId);
+  });
+  return { uid, paymentId, status: decision };
+});
+
+export const reviewReport = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireAdmin(request);
   const reportId = text(request.data.reportId, "Report ID", 128, 5);
   const status = request.data.status;
@@ -125,7 +238,7 @@ export const reviewReport = onCall(async (request) => {
   return { reportId, status };
 });
 
-export const setUserStatus = onCall(async (request) => {
+export const setUserStatus = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireAdmin(request);
   const uid = text(request.data.uid, "User UID", 128, 5);
   const status = request.data.status;
@@ -146,7 +259,7 @@ export const setUserStatus = onCall(async (request) => {
   return { uid, status };
 });
 
-export const submitSupportReport = onCall(async (request) => {
+export const submitSupportReport = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireUser(request);
   const category = request.data.category;
   if (!(["account", "auction", "payment", "safety", "other"] as unknown[]).includes(category)) throw new HttpsError("invalid-argument", "Choose a valid report category.");

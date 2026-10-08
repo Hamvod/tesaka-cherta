@@ -3,7 +3,7 @@ import { getStorage } from "firebase-admin/storage";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { db, finiteNumber, millis, millisFromFirestore, requireActive, requireAdmin, requireCaller, requireOwnerOrAdmin, requireUser, serverTimestamp, text, writeAuditInTransaction } from "./common";
+import { CALLABLE_OPTIONS, db, finiteNumber, millis, millisFromFirestore, requireActive, requireAdmin, requireCaller, requireOwnerOrAdmin, requireUser, serverTimestamp, text, writeAuditInTransaction } from "./common";
 import { parseAmountCents, selectLowestUniqueAmount } from "./domain";
 
 function centsFromInput(value: unknown): number {
@@ -44,7 +44,7 @@ function publicationStatus(startsAt: number): "published" | "live" {
   return startsAt <= Date.now() ? "live" : "published";
 }
 
-export const createAuction = onCall(async (request) => {
+export const createAuction = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireOwnerOrAdmin(request);
   const data = request.data;
   const title = text(data.title, "Title", 220, 4);
@@ -88,7 +88,7 @@ export const createAuction = onCall(async (request) => {
   return { auctionId: auctionRef.id, status: "draft" };
 });
 
-export const submitAuctionForReview = onCall(async (request) => {
+export const submitAuctionForReview = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireOwnerOrAdmin(request);
   const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
   const auctionRef = db.doc(`auctions/${auctionId}`);
@@ -105,7 +105,7 @@ export const submitAuctionForReview = onCall(async (request) => {
   return { status: "pending_review" };
 });
 
-export const reviewAuction = onCall(async (request) => {
+export const reviewAuction = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireAdmin(request);
   const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
   const decision = request.data.decision;
@@ -141,7 +141,7 @@ export const reviewAuction = onCall(async (request) => {
   return { status: decision };
 });
 
-export const publishAuction = onCall(async (request) => {
+export const publishAuction = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireAdmin(request);
   const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
   const auctionRef = db.doc(`auctions/${auctionId}`);
@@ -162,7 +162,7 @@ export const publishAuction = onCall(async (request) => {
   return { status: nextStatus };
 });
 
-export const closeAuctionForEditing = onCall(async (request) => {
+export const closeAuctionForEditing = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireAdmin(request);
   const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
   const auctionRef = db.doc(`auctions/${auctionId}`);
@@ -181,7 +181,7 @@ export const closeAuctionForEditing = onCall(async (request) => {
   return { status: "closed" };
 });
 
-export const updateAuction = onCall(async (request) => {
+export const updateAuction = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireOwnerOrAdmin(request);
   const data = request.data;
   const auctionId = text(data.auctionId, "Auction ID", 128, 5);
@@ -244,7 +244,7 @@ export const updateAuction = onCall(async (request) => {
   return { auctionId, status: "draft" };
 });
 
-export const placeBid = onCall(async (request) => {
+export const placeBid = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireUser(request);
   if (caller.token.admin === true) throw new HttpsError("permission-denied", "Administrator accounts cannot place bids.");
   const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
@@ -401,7 +401,7 @@ async function finalizeAuction(auctionId: string, actorUid: string, allowEarly =
   return { resultType, referenceCode, winningAmount: winningCents === null ? null : winningCents / 100, validBidCount, resultHash };
 }
 
-export const finalizeAuctionNow = onCall(async (request) => {
+export const finalizeAuctionNow = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = requireCaller(request);
   await requireActive(caller.uid);
   const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);

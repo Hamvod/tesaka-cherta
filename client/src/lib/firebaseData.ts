@@ -27,11 +27,13 @@ import {
   publishAuctionCall,
   recordManualPaymentCall,
   requestOwnerAccessCall,
+  reviewPaymentProofCall,
   reviewAuctionCall,
   reviewOwnerApplicationCall,
   reviewReportCall,
   setUserStatusCall,
   submitAuctionForReviewCall,
+  submitPaymentProofCall,
   submitSupportReportCall,
   type CreateAuctionInput,
   updateAuctionCall,
@@ -112,7 +114,7 @@ export type ReportRecord = {
   adminReply: string | null;
   createdAt: Date;
 };
-export type PaymentRecord = { id: string; uid: string; auctionId: string; auctionTitle: string; amount: number; provider: string; providerReference: string; status: "pending" | "paid" | "failed"; used: boolean; createdAt: Date };
+export type PaymentRecord = { id: string; uid: string; auctionId: string; auctionTitle: string; amount: number; provider: string; providerReference: string; status: "pending" | "paid" | "failed"; used: boolean; createdAt: Date; source: "manual" | "bidder_proof"; proofStoragePath: string | null; ocrText: string | null; ocrStatusHint: "success_terms" | "failure_terms" | "unclear" | null; verificationNote: string | null };
 export type AuditRecord = { id: string; action: string; entityType: string; entityId: string; actorUid: string; createdAt: Date };
 export type NotificationRecord = { id: string; type: string; titleKey: string; bodyKey: string; params: Record<string, string>; createdAt: Date; readAt: Date | null };
 export type DeviceRecord = { id: string; label: string; userAgent: string; firstSeen: Date; lastSeen: Date; current: boolean };
@@ -238,13 +240,36 @@ export async function listPublicResults(): Promise<AuctionResult[]> {
   }));
 }
 
+function readPaymentRecord(id: string, uid: string, data: DocumentData): PaymentRecord {
+  const hint = data.ocrStatusHint;
+  return {
+    id, uid, auctionId: String(data.auctionId ?? ""), auctionTitle: String(data.auctionTitle ?? "Auction"),
+    amount: numberValue(data.amount), provider: String(data.provider ?? "manual"), providerReference: String(data.providerReference ?? ""),
+    status: data.status === "paid" || data.status === "failed" ? data.status : "pending", used: data.used === true, createdAt: toDate(data.createdAt),
+    source: data.source === "bidder_proof" ? "bidder_proof" : "manual",
+    proofStoragePath: typeof data.proofStoragePath === "string" ? data.proofStoragePath : null,
+    ocrText: typeof data.ocrText === "string" ? data.ocrText : null,
+    ocrStatusHint: hint === "success_terms" || hint === "failure_terms" || hint === "unclear" ? hint : null,
+    verificationNote: typeof data.verificationNote === "string" ? data.verificationNote : null,
+  };
+}
+
+export async function listUserPayments(uid: string): Promise<PaymentRecord[]> {
+  const snapshot = await getDocs(query(userCollection(uid, "payments"), orderBy("createdAt", "desc"), limit(100)));
+  return snapshot.docs.map((item) => readPaymentRecord(item.id, uid, item.data()));
+}
+
 export async function listAvailablePayments(uid: string, auctionId: string): Promise<PaymentRecord[]> {
-  const snapshot = await getDocs(userCollection(uid, "payments"));
-  return snapshot.docs.map((item) => ({
-    id: item.id, uid, auctionId: String(item.data().auctionId ?? ""), auctionTitle: String(item.data().auctionTitle ?? "Auction"),
-    amount: numberValue(item.data().amount), provider: String(item.data().provider ?? "manual"), providerReference: String(item.data().providerReference ?? ""),
-    status: item.data().status === "paid" || item.data().status === "failed" ? item.data().status : "pending", used: item.data().used === true, createdAt: toDate(item.data().createdAt),
-  })).filter((payment) => payment.auctionId === auctionId && payment.status === "paid" && !payment.used);
+  const records = await listUserPayments(uid);
+  return records.filter((payment) => payment.auctionId === auctionId && payment.status === "paid" && !payment.used);
+}
+
+export async function submitUserPaymentProof(input: { auctionId: string; provider: string; providerReference?: string; proofStoragePath?: string; ocrText?: string }) {
+  return submitPaymentProofCall(input);
+}
+
+export async function reviewUserPaymentProof(input: { uid: string; paymentId: string; decision: "paid" | "failed"; note?: string }) {
+  return reviewPaymentProofCall(input);
 }
 
 export async function submitFirestoreBid(_uid: string, auctionId: string, paymentId: string, rawAmount: string) {
@@ -351,11 +376,7 @@ export async function reviewFirestoreReport(_actorUid: string, reportId: string,
 
 export async function listAdminPayments(): Promise<PaymentRecord[]> {
   const snapshot = await getDocs(query(collectionGroup(firestore, "payments"), orderBy("createdAt", "desc"), limit(200)));
-  return snapshot.docs.map((item) => ({ id: item.id, uid: item.ref.parent.parent?.id ?? String(item.data().uid ?? ""), auctionId: String(item.data().auctionId ?? ""),
-    auctionTitle: String(item.data().auctionTitle ?? "Auction"), amount: numberValue(item.data().amount), provider: String(item.data().provider ?? "manual"),
-    providerReference: String(item.data().providerReference ?? ""), status: item.data().status === "paid" || item.data().status === "failed" ? item.data().status : "pending",
-    used: item.data().used === true, createdAt: toDate(item.data().createdAt),
-  }));
+  return snapshot.docs.map((item) => readPaymentRecord(item.id, item.ref.parent.parent?.id ?? String(item.data().uid ?? ""), item.data()));
 }
 
 export async function createManualPaymentRecord(_actorUid: string, input: { uid: string; auctionId: string; providerReference: string; status: "pending" | "paid" }) {

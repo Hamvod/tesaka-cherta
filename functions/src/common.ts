@@ -3,6 +3,7 @@ import type { CallableRequest } from "firebase-functions/v2/https";
 import { HttpsError } from "firebase-functions/v2/https";
 
 export const db = getFirestore();
+export const CALLABLE_OPTIONS = { cors: ["https://tesaka-cherta.vercel.app", "http://localhost:5173"] };
 export const serverTimestamp = () => FieldValue.serverTimestamp();
 export type CallRequest = CallableRequest<Record<string, unknown>>;
 export type Caller = NonNullable<CallRequest["auth"]>;

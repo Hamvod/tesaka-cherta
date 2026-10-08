@@ -49,6 +49,25 @@ async function callFunction(name, idToken, data) {
   return body.result;
 }
 
+async function queryPaymentGroup(idToken) {
+  return fetch(`http://127.0.0.1:8080/v1/projects/${projectId}/databases/(default)/documents:runQuery`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${idToken}` },
+    body: JSON.stringify({ structuredQuery: { from: [{ collectionId: "payments", allDescendants: true }], orderBy: [{ field: { fieldPath: "createdAt" }, direction: "DESCENDING" }], limit: 200 } }),
+  });
+}
+
+async function uploadReceiptAsUser(bucketName, objectPath, idToken) {
+  return fetch(`http://127.0.0.1:9199/v0/b/${encodeURIComponent(bucketName)}/o?uploadType=media&name=${encodeURIComponent(objectPath)}`, {
+    method: "POST", headers: { authorization: `Bearer ${idToken}`, "content-type": "image/png" }, body: Buffer.from("local emulator receipt image"),
+  });
+}
+
+async function readReceiptAsUser(bucketName, objectPath, idToken) {
+  return fetch(`http://127.0.0.1:9199/v0/b/${encodeURIComponent(bucketName)}/o/${encodeURIComponent(objectPath)}?alt=media`, {
+    headers: { authorization: `Bearer ${idToken}` },
+  });
+}
+
 async function expectCallableError(name, idToken, data, expectedStatus) {
   let failure;
   try { await callFunction(name, idToken, data); } catch (error) { failure = error; }
@@ -58,6 +77,11 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
 
 (async () => {
   const admin = await createAccount(`admin-${Date.now()}@example.test`, "Emulator Admin", { admin: true });
+  const cors = await fetch(`http://127.0.0.1:5001/${projectId}/us-central1/closeAuctionForEditing`, {
+    method: "OPTIONS", headers: { origin: "https://tesaka-cherta.vercel.app", "access-control-request-method": "POST", "access-control-request-headers": "authorization,content-type" },
+  });
+  assert.ok(cors.status === 200 || cors.status === 204, `Callable preflight should succeed; got HTTP ${cors.status}`);
+  assert.equal(cors.headers.get("access-control-allow-origin"), "https://tesaka-cherta.vercel.app");
   const owner = await createAccount(`owner-${Date.now()}@example.test`, "Emulator Seller");
   const bidders = await Promise.all([1, 2, 3, 4].map((number) => createAccount(`bidder-${number}-${Date.now()}@example.test`, `Bidder ${number}`)));
 
@@ -99,6 +123,39 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   assert.equal((await db.doc(`products/${ownerAuction.auctionId}`).get()).get("status"), "draft");
   await callFunction("publishAuction", admin.idToken, { auctionId: ownerAuction.auctionId });
   assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("status"), "published");
+
+  const proofAuctionId = `proof-smoke-${Date.now()}`;
+  await db.doc(`auctions/${proofAuctionId}`).set({
+    ownerUid: admin.uid, ownerName: admin.displayName, title: "Payment proof smoke auction", category: "Test",
+    description: "Local-only auction for bidder payment proof verification.", imagePath: "https://example.test/proof.jpg",
+    bidFee: 1, minBid: 0.1, maxBid: 100, maxBidsPerUser: 5,
+    startsAt: Timestamp.fromMillis(Date.now() - 60_000), endsAt: Timestamp.fromMillis(Date.now() + 60 * 60_000),
+    status: "live", bidCount: 0, createdAt: Timestamp.now(),
+  });
+  const proofStoragePath = `payment-receipts/${bidders[3].uid}/receipt-${Date.now()}.png`;
+  const uploadResponse = await uploadReceiptAsUser(bucketName, proofStoragePath, bidders[3].idToken);
+  assert.equal(uploadResponse.ok, true, `Bidder should upload own private receipt: ${await uploadResponse.text()}`);
+  assert.equal((await readReceiptAsUser(bucketName, proofStoragePath, bidders[3].idToken)).ok, true, "Receipt owner should be able to read its upload");
+  assert.equal((await readReceiptAsUser(bucketName, proofStoragePath, bidders[0].idToken)).status, 403, "Another bidder must not read a private receipt");
+  assert.equal((await readReceiptAsUser(bucketName, proofStoragePath, admin.idToken)).ok, true, "Admin must be able to inspect a private receipt");
+  const submittedProof = await callFunction("submitPaymentProof", bidders[3].idToken, {
+    auctionId: proofAuctionId, provider: "Telebirr", providerReference: `PROOF-${Date.now()}`,
+    proofStoragePath, ocrText: "Transfer completed successfully",
+  });
+  assert.equal(submittedProof.status, "pending", "OCR must never automatically verify payment");
+  assert.equal(submittedProof.ocrStatusHint, "success_terms", "OCR should return a non-authoritative success-word hint");
+  const pendingProofRef = db.doc(`users/${bidders[3].uid}/payments/${submittedProof.paymentId}`);
+  assert.equal((await pendingProofRef.get()).get("status"), "pending");
+  assert.equal((await queryPaymentGroup(admin.idToken)).ok, true, "Admin collection-group payment query should be allowed by Firestore Rules");
+  assert.equal((await queryPaymentGroup(bidders[0].idToken)).status, 403, "Non-admin collection-group payment query should be denied");
+  await expectCallableError("placeBid", bidders[3].idToken, { auctionId: proofAuctionId, amount: 1.25, paymentId: submittedProof.paymentId }, "FAILED_PRECONDITION");
+  await expectCallableError("reviewPaymentProof", bidders[3].idToken, { uid: bidders[3].uid, paymentId: submittedProof.paymentId, decision: "paid" }, "PERMISSION_DENIED");
+  const reviewedProof = await callFunction("reviewPaymentProof", admin.idToken, { uid: bidders[3].uid, paymentId: submittedProof.paymentId, decision: "paid" });
+  assert.equal(reviewedProof.status, "paid");
+  assert.equal((await pendingProofRef.get()).get("verifiedBy"), admin.uid);
+  await callFunction("placeBid", bidders[3].idToken, { auctionId: proofAuctionId, amount: 1.25, paymentId: submittedProof.paymentId });
+  assert.equal((await pendingProofRef.get()).get("used"), true, "Approved proof must be consumed once by the trusted bid callable");
+  assert.equal((await db.doc(`users/${bidders[3].uid}/notifications/payment-review-${submittedProof.paymentId}`).get()).exists, true);
 
   const auctionId = `smoke-${Date.now()}`;
   const now = Date.now();
@@ -147,6 +204,7 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
     ok: true, projectId, ownerApplicationAndListing: "approved, uploaded, reviewed, published, closed for editing, updated, and republished", auctionId, acceptedBids: 3, rejectedUnpaidBid: true,
     duplicateAmount: 8, winner: "Bidder 2", winningAmount: result.winningAmount,
     resultReference: result.referenceCode, resultHash: result.resultHash,
+    callableCorsAllowlist: true, privateReceiptAccessRules: true, paymentProofReviewAndUse: true, adminOnlyPaymentCollectionGroupRead: true,
     paymentConsumed: true, winnerRecordAndNotifications: true,
   }, null, 2));
 })().catch((error) => {
