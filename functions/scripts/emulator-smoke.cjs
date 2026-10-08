@@ -84,6 +84,21 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   assert.equal(listingReview.status, "approve");
   assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("status"), "published");
   assert.equal((await auth.getUser(owner.uid)).customClaims.owner, true);
+  await callFunction("closeAuctionForEditing", admin.idToken, { auctionId: ownerAuction.auctionId });
+  assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("status"), "closed");
+  const editedAuction = await callFunction("updateAuction", admin.idToken, {
+    auctionId: ownerAuction.auctionId, title: "Edited owner emulator listing", category: "Test",
+    description: "Edited using the trusted callable, retaining the already uploaded image.", sellerName: "Emulator Seller Shop",
+    bidFee: 1, minBid: 0.1, maxBid: 100, maxBidsPerUser: 5,
+    startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
+  });
+  assert.equal(editedAuction.status, "draft");
+  const editedDoc = await db.doc(`auctions/${ownerAuction.auctionId}`).get();
+  assert.equal(editedDoc.get("title"), "Edited owner emulator listing");
+  assert.equal(editedDoc.get("imageStoragePath"), imageStoragePath, "Editing should retain the existing product image when no replacement is selected");
+  assert.equal((await db.doc(`products/${ownerAuction.auctionId}`).get()).get("status"), "draft");
+  await callFunction("publishAuction", admin.idToken, { auctionId: ownerAuction.auctionId });
+  assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("status"), "published");
 
   const auctionId = `smoke-${Date.now()}`;
   const now = Date.now();
@@ -108,6 +123,8 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
     callFunction("placeBid", bidders[2].idToken, { auctionId, amount: 8, paymentId: `pay-${bidders[2].uid}` }),
   ]);
   await expectCallableError("placeBid", bidders[3].idToken, { auctionId, amount: 2.5 }, "FAILED_PRECONDITION");
+  await expectCallableError("closeAuctionForEditing", admin.idToken, { auctionId }, "FAILED_PRECONDITION");
+  assert.equal((await auctionRef.get()).get("status"), "live", "An auction with accepted bids must remain live");
   assert.equal((await auctionRef.get()).get("bidCount"), 3, "Rejected bid must not increment the accepted bid counter");
   assert.equal((await db.doc(`users/${bidders[0].uid}/payments/pay-${bidders[0].uid}`).get()).get("used"), true, "Verified payment should be consumed exactly once");
 
@@ -127,7 +144,7 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   await expectCallableError("placeBid", bidders[0].idToken, { auctionId, amount: 1, paymentId: `pay-${bidders[0].uid}` }, "FAILED_PRECONDITION");
 
   console.log(JSON.stringify({
-    ok: true, projectId, ownerApplicationAndListing: "approved, uploaded, reviewed, and published", auctionId, acceptedBids: 3, rejectedUnpaidBid: true,
+    ok: true, projectId, ownerApplicationAndListing: "approved, uploaded, reviewed, published, closed for editing, updated, and republished", auctionId, acceptedBids: 3, rejectedUnpaidBid: true,
     duplicateAmount: 8, winner: "Bidder 2", winningAmount: result.winningAmount,
     resultReference: result.referenceCode, resultHash: result.resultHash,
     paymentConsumed: true, winnerRecordAndNotifications: true,

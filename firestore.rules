@@ -14,7 +14,7 @@ service cloud.firestore {
     }
     function ownActive(uid) { return signedIn() && request.auth.uid == uid && activeUser(uid); }
     function auctionPath(auctionId) { return /databases/$(database)/documents/auctions/$(auctionId); }
-    function publicAuctionStatus(status) { return status in ['published', 'live', 'completed', 'closed']; }
+    function publicAuctionStatus(status) { return status in ['published', 'live', 'completed']; }
 
     match /users/{uid} {
       allow read: if admin() || (signedIn() && request.auth.uid == uid);

@@ -57,7 +57,7 @@ The Firebase web configuration is hard-coded in `client/src/lib/firebase.ts` as 
 - **Bids:** `placeBid` validates the signed-in user, auction schedule/status, bid range and precision, per-user cap, rate limit, and a matching unused administrator-verified payment. One Firestore transaction consumes the payment, increments amount and bidder counters, records the private bid/entry, and creates a notification. Bids and counters cannot be written by the browser.
 - **Lowest unique bid:** Finalization reads the server-maintained amount-frequency records. The lowest amount appearing exactly once wins; if no amount is unique, the result says so. Finalization writes an immutable public result, SHA-256 integrity hash/reference, bidder win record, notification, and audit event. A scheduled Function transitions published auctions at opening time and finalizes ended live auctions.
 - **Owner portal:** Users can apply for seller access. Admin review assigns or removes the custom `owner: true` claim. Verified owners upload product photos to their own Storage folder and submit listings for admin review before publication.
-- **Admin portal:** Custom-claim-gated views manage auctions, seller applications/listings, users, manual payment records, reports/replies, and audit logs.
+- **Admin portal:** Custom-claim-gated views manage auctions, seller applications/listings, users, manual payment records, reports/replies, and audit logs. A published/live auction can be closed for editing only while it has no accepted bids and has not reached its scheduled end. The admin edit callable saves changes as a draft; publishing returns the admin to the public marketplace. Auctions with accepted bids cannot be edited through this workflow.
 - **Account:** Profile preferences, bid/win history, saved auctions, notifications, device list, and private report history are available to the signed-in user.
 - **Languages:** The client supports English and Amharic, with the language preference stored on the account and in local storage.
 
@@ -90,7 +90,7 @@ The Firebase web configuration is hard-coded in `client/src/lib/firebase.ts` as 
 
 ## Local emulator smoke test
 
-This test uses a **demo-only** project ID and local emulator data; it does not deploy or call the live Firebase project. It verifies three accepted bids (including a duplicate amount), rejection of an unpaid bid, one-time payment consumption, admin finalization, winner selection, result hash, and winner notifications:
+This test uses a **demo-only** project ID and local emulator data; it does not deploy or call the live Firebase project. It verifies owner onboarding, listing publication, closing/editing/republishing a zero-bid auction, protection against editing an auction with accepted bids, three accepted bids (including a duplicate amount), rejection of an unpaid bid, one-time payment consumption, admin finalization, winner selection, result hash, and winner notifications:
 
 ```sh
 npm --prefix functions run build

@@ -22,7 +22,15 @@ export type CreateAuctionInput = {
   endsAtMs: number;
 };
 
+export type UpdateAuctionInput = Omit<CreateAuctionInput, "imagePath" | "imageStoragePath"> & {
+  auctionId: string;
+  imagePath?: string;
+  imageStoragePath?: string;
+};
+
 export const createAuctionCall = callable<CreateAuctionInput, { auctionId: string; status: string }>("createAuction");
+export const updateAuctionCall = callable<UpdateAuctionInput, { auctionId: string; status: string }>("updateAuction");
+export const closeAuctionForEditingCall = callable<{ auctionId: string }, { status: string }>("closeAuctionForEditing");
 export const submitAuctionForReviewCall = callable<{ auctionId: string }, { status: string }>("submitAuctionForReview");
 export const reviewAuctionCall = callable<{ auctionId: string; decision: "approve" | "reject"; note?: string }, { status: string }>("reviewAuction");
 export const publishAuctionCall = callable<{ auctionId: string }, { status: string }>("publishAuction");

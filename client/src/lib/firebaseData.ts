@@ -21,6 +21,7 @@ import {
 import { firestore } from "./firebase";
 import {
   createAuctionCall,
+  closeAuctionForEditingCall,
   finalizeAuctionCall,
   placeBidCall,
   publishAuctionCall,
@@ -33,6 +34,8 @@ import {
   submitAuctionForReviewCall,
   submitSupportReportCall,
   type CreateAuctionInput,
+  updateAuctionCall,
+  type UpdateAuctionInput,
 } from "./cloudFunctions";
 
 export type AccountProfile = { phone: string | null; city: string | null; language: "en" | "am"; marketingOptIn: boolean };
@@ -289,9 +292,20 @@ export async function createFirestoreAuction(_actorUid: string, input: Omit<Auct
   return createAuctionCall(request);
 }
 
+export async function updateFirestoreAuction(_actorUid: string, auctionId: string, input: Omit<AuctionRecord, "id" | "bidCount" | "createdAt" | "status"> & { description: string; imageStoragePath?: string }) {
+  const request: UpdateAuctionInput = {
+    auctionId, title: input.title, category: input.category, description: input.description, sellerName: input.sellerName,
+    bidFee: input.bidFee, minBid: input.minBid, maxBid: input.maxBid, maxBidsPerUser: input.maxBidsPerUser,
+    startsAtMs: input.startsAt.getTime(), endsAtMs: input.endsAt.getTime(),
+    ...(input.imageStoragePath ? { imagePath: input.imagePath, imageStoragePath: input.imageStoragePath } : {}),
+  };
+  return updateAuctionCall(request);
+}
+
 export async function submitAuctionReview(_actorUid: string, auctionId: string) { return submitAuctionForReviewCall({ auctionId }); }
 export async function reviewAuctionListing(auctionId: string, decision: "approve" | "reject", note = "") { return reviewAuctionCall({ auctionId, decision, note }); }
 export async function publishFirestoreAuction(_actorUid: string, auctionId: string) { return publishAuctionCall({ auctionId }); }
+export async function closeAuctionForEditing(_actorUid: string, auctionId: string) { return closeAuctionForEditingCall({ auctionId }); }
 export async function closeFirestoreAuction(_actorUid: string, auctionId: string) { return finalizeAuctionCall({ auctionId }); }
 
 export async function listAdminUsers(): Promise<UserRecord[]> {
