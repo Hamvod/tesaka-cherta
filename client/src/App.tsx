@@ -8,6 +8,10 @@ import Home from "./pages/Home";
 import Auth from "./pages/Auth";
 import Account from "./pages/Account";
 import Admin from "./pages/Admin";
+import AuctionDetail from "./pages/AuctionDetail";
+import OwnerPortal from "./pages/OwnerPortal";
+import Winners from "./pages/Winners";
+import { LanguageProvider } from "./lib/i18n";
 
 function Router() {
   // make sure to consider if you need authentication for certain routes
@@ -18,6 +22,9 @@ function Router() {
       <Route path={"/register"} component={() => <Auth mode="register" />} />
       <Route path={"/account"} component={Account} />
       <Route path={"/admin"} component={Admin} />
+      <Route path={"/owner"} component={OwnerPortal} />
+      <Route path={"/winners"} component={Winners} />
+      <Route path={"/auction/:auctionId"}>{(params) => <AuctionDetail auctionId={params.auctionId} />}</Route>
       <Route path={"/404"} component={NotFound} />
       {/* Final fallback route */}
       <Route component={NotFound} />
@@ -37,10 +44,12 @@ function App() {
         defaultTheme="light"
         // switchable
       >
-        <TooltipProvider>
-          <Toaster />
-          <Router />
-        </TooltipProvider>
+        <LanguageProvider>
+          <TooltipProvider>
+            <Toaster />
+            <Router />
+          </TooltipProvider>
+        </LanguageProvider>
       </ThemeProvider>
     </ErrorBoundary>
   );

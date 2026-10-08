@@ -1,40 +1,46 @@
-# Tesaka Cherta — static Firebase app
+# Tesaka Cherta — Firebase auction platform
 
 ## Architecture
 
-The browser app is a static Vite build. There is **no tRPC API, Express server, PostgreSQL database, Drizzle schema, or Vercel function**. Firebase Authentication handles sign-in; the Firebase web SDK reads and writes Cloud Firestore directly from the browser. Vercel can continue hosting the static build, and `firebase.json` also defines Firebase Hosting.
+The web client is a static React/Vite app. Firebase Authentication provides email/password sign-in; the Firebase Web SDK reads allowed data from Cloud Firestore and uploads product images to Cloud Storage. Trusted writes—especially bid acceptance, result calculation, owner approvals, account moderation, payment records, and report review—run through Firebase Cloud Functions v2. The project defines no tRPC endpoints, Express application server, Drizzle schema, or PostgreSQL runtime. Firebase's Functions SDK may include Express as an internal transitive package; it is not used as an application server or direct project dependency.
 
-The Firebase web configuration is hard-coded in `client/src/lib/firebase.ts`, as requested. Firebase web API keys identify the project; authorization is enforced by Firestore rules, not by hiding this configuration.
+The Firebase web configuration is hard-coded in `client/src/lib/firebase.ts` as requested. Web API keys identify the project; security is enforced by Firebase Auth, custom claims, Firestore rules, Storage rules, and server-side validation. Cloud Functions use the Firebase Admin SDK and the configured Storage bucket.
 
-## First-time setup
+## Firebase project setup
 
 1. In Firebase project `studio-7668403722-dc933`, enable **Authentication → Email/Password** and create the Firestore database.
-2. Enable Firebase Authentication domains for the production site and any preview hosts.
-3. Install dependencies and build the static app:
+2. Confirm the project’s default Cloud Storage bucket is `studio-7668403722-dc933.firebasestorage.app` and enable Storage.
+3. Add the production domain and any intended preview hosts under **Authentication → Settings → Authorized domains**.
+4. Install and build the app and Functions:
 
    ```sh
    pnpm install
    pnpm check
    pnpm test
    pnpm build
+   npm --prefix functions install
+   npm --prefix functions run build
    ```
 
-4. Sign in to Firebase CLI with an authorized account, then deploy the rules and indexes:
+5. With Firebase CLI authenticated to the intended project, deploy the database rules/indexes, Storage rules, and Functions:
 
    ```sh
    firebase login
-   firebase deploy --only firestore:rules,firestore:indexes
+   firebase use studio-7668403722-dc933
+   firebase deploy --only firestore:rules,firestore:indexes,storage,functions
    ```
 
-5. Optionally host the static build from Firebase Hosting:
+   Cloud Functions and scheduled lifecycle processing may require a billing-enabled Firebase/Google Cloud project. The app does not charge bidders or connect to a payment provider.
+
+6. Host the static client either from the configured Firebase Hosting target or through the repository’s Vercel configuration:
 
    ```sh
    firebase deploy --only hosting
    ```
 
-   For Vercel, connect the repository; its `vercel.json` builds `dist/public` and uses only the SPA fallback rewrite.
+   Build output is `dist/public`; all application routes use the SPA fallback rewrite.
 
-6. Provision administrator access from a trusted environment. The Admin SDK script sets a server-controlled custom claim and the matching Firestore profile; it is **not** included in the browser bundle:
+7. Provision initial administrator access from a trusted environment only:
 
    ```sh
    GOOGLE_APPLICATION_CREDENTIALS=/secure/path/service-account.json \
@@ -43,30 +49,56 @@ The Firebase web configuration is hard-coded in `client/src/lib/firebase.ts`, as
    pnpm admin:seed
    ```
 
-   Never commit service-account keys or passwords. Sign out/in or refresh the ID token after changing custom claims.
+   Never commit service-account keys or passwords. If the email already exists, the seed script resets that user’s password to `ADMIN_SEED_PASSWORD`. The script assigns the server-controlled `admin: true` custom claim and matching Firestore profile. Sign out/in or force-refresh the ID token after any custom-claim change.
 
-## Firestore collections
+## Auction and account workflows
 
-- `users/{uid}` — profile, `role`, account `status`; only the owner and a claim-verified admin may read it.
-- `users/{uid}/watchlist/{auctionId}` — private saved auctions.
-- `users/{uid}/payments/{paymentId}` — payment records created only by admins. A bidder can consume an independently verified paid record once.
-- `users/{uid}/bids/{bidId}` — private bidder history, immutable from the client after creation.
-- `auctions/{auctionId}` — listings and lifecycle (`draft`, `live`, `closed`).
-- `auctions/{auctionId}/entries/{bidId}` — bid amounts; readable only by admins, not other bidders.
-- `auctions/{auctionId}/bidderCounters/{uid}` — transaction-bound per-user bid cap.
-- `results/{auctionId}` — public, immutable-after-publication result and verification hash.
-- `reports/{reportId}` — private complaints/support reports; the reporter and admins can read them.
-- `auditLogs/{eventId}` — admin audit events.
+- **Public marketplace:** Published/live auctions and published results are read from Firestore. The winner gallery exposes result references and integrity hashes.
+- **Bids:** `placeBid` validates the signed-in user, auction schedule/status, bid range and precision, per-user cap, rate limit, and a matching unused administrator-verified payment. One Firestore transaction consumes the payment, increments amount and bidder counters, records the private bid/entry, and creates a notification. Bids and counters cannot be written by the browser.
+- **Lowest unique bid:** Finalization reads the server-maintained amount-frequency records. The lowest amount appearing exactly once wins; if no amount is unique, the result says so. Finalization writes an immutable public result, SHA-256 integrity hash/reference, bidder win record, notification, and audit event. A scheduled Function transitions published auctions at opening time and finalizes ended live auctions.
+- **Owner portal:** Users can apply for seller access. Admin review assigns or removes the custom `owner: true` claim. Verified owners upload product photos to their own Storage folder and submit listings for admin review before publication.
+- **Admin portal:** Custom-claim-gated views manage auctions, seller applications/listings, users, manual payment records, reports/replies, and audit logs.
+- **Account:** Profile preferences, bid/win history, saved auctions, notifications, device list, and private report history are available to the signed-in user.
+- **Languages:** The client supports English and Amharic, with the language preference stored on the account and in local storage.
 
-The application rules restrict administrator operations to Firebase ID tokens carrying the signed `admin: true` custom claim. A user cannot assign themselves the admin role, mark their own payment paid, modify submitted bid records, or read other bidders' entries. Auction bids use a Firestore transaction: the auction must be live and within its dates/limits, an admin-created paid record must match the configured fee and be unused, and the bidder's per-auction counter must remain within its cap.
+## Main Firestore collections
+
+| Collection | Purpose and access |
+| --- | --- |
+| `users/{uid}` | Profile and account state; user and admin reads, narrow user profile edits only. |
+| `users/{uid}/watchlist/{auctionId}` | User-owned saved listings. |
+| `users/{uid}/payments/{paymentId}` | Admin-created payment verification records; bidder reads own records and Functions consume a matching paid record once. |
+| `users/{uid}/bids/{bidId}` | Private immutable bid history. |
+| `users/{uid}/wins/{auctionId}` | Private winner record, written by Functions. |
+| `users/{uid}/notifications/{id}` | Private notifications; only read-state updates are allowed from the client. |
+| `users/{uid}/devices/{deviceId}` | User’s registered browser/device metadata. |
+| `ownerApplications/{uid}` | Seller application and admin decision. |
+| `products/{productId}` | Product catalog metadata, written by Functions. |
+| `auctions/{auctionId}` | Listing, schedule, bid settings, and lifecycle. Client writes are denied. |
+| `auctions/{auctionId}/entries/{bidId}` | Private bid entries; admin-only reads and Functions-only writes. |
+| `auctions/{auctionId}/amountCounts/{amountCents}` | Server-maintained amount frequencies used for result calculation. |
+| `results/{auctionId}` | Public completed result, reference, and integrity hash; Functions-only writes. |
+| `reports/{reportId}` | Private support/safety report; reporter and admin reads. Private admin notes live in a protected subcollection. |
+| `auditLogs/{eventId}` | Admin/system activity, written by Functions. |
 
 ## Important operating limits
 
-- **No payment gateway is connected.** This static app does not charge money or verify Telebirr. Admins may record a payment only after checking it independently with the provider. Do not mark a record paid based only on a user-provided claim.
-- Auction-result calculation now runs in the admin browser and is protected by Firestore's admin custom claim. This removes the server, but it is not a substitute for an independently auditable trusted settlement service for real-money contests.
-- The old SQL database and migrations are no longer used by the app. Existing auctions, bids, payments, and results in PostgreSQL are **not automatically copied** to Firestore. Import and validate any records you need before relying on the new Firebase collections.
-- Firestore rules and indexes in the repository must be deployed to project `studio-7668403722-dc933` before the Firebase-only workflows can read/write their new collections.
-- Firebase client screens use direct queries. Firestore query/index errors appear in the UI/console and may require deploying the indexes in `firestore.indexes.json`.
+- **No payment gateway is connected.** The static app does not charge cards or verify Telebirr. An administrator may record payment as `paid` only after independently checking it with the provider. The payment record can authorize one bid only.
+- Keep Firebase Security Rules, indexes, Storage rules, and Functions deployed together. A browser UI is not an authorization boundary; the rules and callable Functions are.
+- The prior SQL data is not automatically migrated. Existing auctions, bids, payments, and results in PostgreSQL are not copied to Firestore by this project. Import and validate any records before relying on the Firebase collections.
+- The supplied web API key is public configuration, not a secret. Do not put Admin SDK credentials or service-account JSON into the browser bundle or Git.
+
+## Local emulator smoke test
+
+This test uses a **demo-only** project ID and local emulator data; it does not deploy or call the live Firebase project. It verifies three accepted bids (including a duplicate amount), rejection of an unpaid bid, one-time payment consumption, admin finalization, winner selection, result hash, and winner notifications:
+
+```sh
+npm --prefix functions run build
+npx firebase-tools emulators:exec \
+  --project demo-tesaka-cherta \
+  --only auth,firestore,functions,storage,pubsub \
+  "npm --prefix functions run test:emulator"
+```
 
 ## Validation
 
@@ -74,4 +106,5 @@ The application rules restrict administrator operations to Firebase ID tokens ca
 pnpm check
 pnpm test
 pnpm build
+npm --prefix functions run build
 ```

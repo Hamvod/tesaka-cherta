@@ -1403,7 +1403,7 @@ export default function ComponentsShowcase() {
                       Features markdown rendering, auto-scrolling, and loading states.
                     </p>
                     <p className="mt-2">
-                      This is a demo with simulated responses. In a real app, you'd connect it to a tRPC mutation.
+                      This is a demo with simulated responses. In production, connect it to an authorized Firebase Cloud Function.
                     </p>
                   </div>
                   <AIChatBox
@@ -1416,7 +1416,7 @@ export default function ComponentsShowcase() {
                     suggestedPrompts={[
                       "What is React?",
                       "Explain TypeScript",
-                      "How to use tRPC?",
+                      "How to use Cloud Functions?",
                       "Best practices for web development",
                     ]}
                   />

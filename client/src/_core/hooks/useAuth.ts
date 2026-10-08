@@ -36,6 +36,7 @@ export function useAuth(options?: UseAuthOptions) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
   const [isSuspended, setIsSuspended] = useState(false);
 
   useEffect(() => {
@@ -50,6 +51,7 @@ export function useAuth(options?: UseAuthOptions) {
       setLoading(true);
       if (!nextUser) {
         setIsAdmin(false);
+        setIsOwner(false);
         setIsSuspended(false);
         setError(null);
         setLoading(false);
@@ -66,10 +68,12 @@ export function useAuth(options?: UseAuthOptions) {
       void getIdTokenResult(nextUser).then((tokenResult) => {
         if (!active || currentGeneration !== generation) return;
         setIsAdmin(tokenResult.claims.admin === true);
+        setIsOwner(tokenResult.claims.owner === true);
         setError(null);
       }).catch((authError: unknown) => {
         if (!active || currentGeneration !== generation) return;
         setIsAdmin(false);
+        setIsOwner(false);
         setError(authError instanceof Error ? authError : new Error("Could not read Firebase access claims"));
       }).finally(() => {
         if (active && currentGeneration === generation) setLoading(false);
@@ -78,6 +82,7 @@ export function useAuth(options?: UseAuthOptions) {
       setError(authError);
       setFirebaseUser(null);
       setIsAdmin(false);
+      setIsOwner(false);
       setIsSuspended(false);
       setLoading(false);
     });
@@ -104,6 +109,7 @@ export function useAuth(options?: UseAuthOptions) {
     loading,
     error,
     isAdmin,
+    isOwner,
     isSuspended,
     isAuthenticated: Boolean(user),
     refresh: async () => auth.currentUser?.reload(),

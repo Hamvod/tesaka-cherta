@@ -23,7 +23,7 @@ export type AIChatBoxProps = {
 
   /**
    * Callback when user sends a message.
-   * Typically you'll call a tRPC mutation here to invoke the LLM.
+   * In this Firebase app, connect the handler to an authorized Cloud Function if a chat backend is needed.
    */
   onSendMessage: (content: string) => void;
 

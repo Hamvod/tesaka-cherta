@@ -1,6 +1,8 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getFunctions } from "firebase/functions";
+import { getStorage } from "firebase/storage";
 
 // Firebase web API keys identify the project and are intended to be public.
 // Protect all data with Firebase Authentication and Firestore Security Rules.
@@ -17,4 +19,6 @@ const firebaseConfig = {
 export const firebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
 export const auth = getAuth(firebaseApp);
 export const firestore = getFirestore(firebaseApp);
+export const functions = getFunctions(firebaseApp, "us-central1");
+export const storage = getStorage(firebaseApp);
 export const FIREBASE_PROJECT_ID = firebaseConfig.projectId;
