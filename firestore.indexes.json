@@ -40,5 +40,9 @@
       ]
     }
   ],
-  "fieldOverrides": []
+  "fieldOverrides": [
+    { "collectionGroup": "auctionImages", "fieldPath": "imageDataUrl", "indexes": [] },
+    { "collectionGroup": "proofs", "fieldPath": "imageDataUrl", "indexes": [] },
+    { "collectionGroup": "payments", "fieldPath": "ocrText", "indexes": [] }
+  ]
 }

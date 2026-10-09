@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" role="img" aria-label="Product image placeholder">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e8f0e4"/><stop offset="1" stop-color="#f2efe6"/></linearGradient>
+    <linearGradient id="box" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fffdf8"/><stop offset="1" stop-color="#dce4d7"/></linearGradient>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+  <circle cx="980" cy="150" r="140" fill="#fffdf8" opacity=".42"/>
+  <circle cx="190" cy="680" r="190" fill="#cddcc8" opacity=".35"/>
+  <g transform="translate(425 235)">
+    <path d="M60 90 175 30l115 60-115 60z" fill="#b97828" opacity=".82"/>
+    <path d="M60 90v150l115 65V150z" fill="url(#box)"/>
+    <path d="M290 90v150l-115 65V150z" fill="#cddcc8"/>
+    <path d="M175 30v120M60 90l115 60 115-60" fill="none" stroke="#8c5b1a" stroke-width="8" stroke-linejoin="round"/>
+    <path d="M135 67l115 60" fill="none" stroke="#fffdf8" stroke-width="12" opacity=".8"/>
+  </g>
+  <text x="600" y="610" text-anchor="middle" fill="#0b5f4a" font-family="Arial,sans-serif" font-size="30" font-weight="700" letter-spacing="4">TESAKA CHERTA</text>
+  <text x="600" y="654" text-anchor="middle" fill="#7b867c" font-family="Arial,sans-serif" font-size="22">Product image</text>
+</svg>

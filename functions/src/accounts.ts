@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import { getAuth } from "firebase-admin/auth";
-import { getStorage } from "firebase-admin/storage";
 import { FieldValue } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
-import { CALLABLE_OPTIONS, db, finiteNumber, millisFromFirestore, requireActive, requireAdmin, requireCaller, requireUser, serverTimestamp, text, writeAuditInTransaction } from "./common";
+import { CALLABLE_OPTIONS, db, finiteNumber, millisFromFirestore, requireActive, requireAdmin, requireCaller, requireUser, serverTimestamp, text, validateFirestoreJpeg, writeAuditInTransaction } from "./common";
 
 function paymentReferenceRef(reference: string) {
   const normalized = reference.trim().replace(/\s+/g, "").toLowerCase();
@@ -113,34 +112,18 @@ export const submitPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {
     throw new HttpsError("invalid-argument", "Transaction number must be between 3 and 160 characters.");
   }
   const providerReference = rawReference;
-  const rawProofPath = typeof request.data.proofStoragePath === "string" ? request.data.proofStoragePath.trim() : "";
-  const proofStoragePath = rawProofPath || null;
+  const proofImage = request.data.proofImageDataUrl === undefined || request.data.proofImageDataUrl === null
+    ? null
+    : validateFirestoreJpeg(request.data.proofImageDataUrl, "Receipt image");
   const ocrText = typeof request.data.ocrText === "string" ? request.data.ocrText.trim().slice(0, 6000) : "";
-  if (!providerReference && !proofStoragePath) throw new HttpsError("invalid-argument", "Enter a transaction number or upload a receipt image.");
-
-  if (proofStoragePath) {
-    if (!proofStoragePath.startsWith(`payment-receipts/${caller.uid}/`) || proofStoragePath.includes("..")) {
-      throw new HttpsError("permission-denied", "The receipt must be uploaded to your own private receipt folder.");
-    }
-    try {
-      const file = getStorage().bucket().file(proofStoragePath);
-      const [exists] = await file.exists();
-      if (!exists) throw new HttpsError("failed-precondition", "Upload the receipt image before submitting it.");
-      const [metadata] = await file.getMetadata();
-      if (!new Set(["image/jpeg", "image/png", "image/webp"]).has(String(metadata.contentType ?? "")) || Number(metadata.size ?? 0) > 5 * 1024 * 1024) {
-        throw new HttpsError("invalid-argument", "Receipt must be a JPEG, PNG, or WebP image no larger than 5 MB.");
-      }
-    } catch (error) {
-      if (error instanceof HttpsError) throw error;
-      throw new HttpsError("failed-precondition", "The uploaded receipt could not be checked. Please upload it again.");
-    }
-  }
+  if (!providerReference && !proofImage) throw new HttpsError("invalid-argument", "Enter a transaction number or submit a receipt image.");
 
   const profileRef = db.doc(`users/${caller.uid}`);
   const auctionRef = db.doc(`auctions/${auctionId}`);
   const rateRef = db.doc(`rateLimits/payment-proof-${caller.uid}`);
   const uniqueReference = providerReference ? paymentReferenceRef(providerReference) : null;
   const paymentRef = db.collection(`users/${caller.uid}/payments`).doc();
+  const proofImageRef = paymentRef.collection("proofs").doc("receipt");
   const hint = paymentOcrHint(ocrText);
   const hourBucket = Math.floor(Date.now() / 3_600_000);
   await db.runTransaction(async (tx) => {
@@ -160,8 +143,12 @@ export const submitPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {
     if (count > 5) throw new HttpsError("resource-exhausted", "You have reached the payment-proof submission limit. Try again later.");
     tx.create(paymentRef, {
       uid: caller.uid, auctionId, auctionTitle: String(auction.get("title") ?? "Auction"), amount,
-      provider, providerReference, source: "bidder_proof", proofStoragePath, ocrText: ocrText || null,
+      provider, providerReference, source: "bidder_proof", hasReceiptImage: Boolean(proofImage), ocrText: ocrText || null,
       ocrStatusHint: hint, status: "pending", used: false, createdAt: serverTimestamp(), submittedBy: caller.uid,
+    });
+    if (proofImage) tx.create(proofImageRef, {
+      uid: caller.uid, paymentId: paymentRef.id, imageDataUrl: proofImage.dataUrl, contentType: "image/jpeg",
+      byteLength: proofImage.byteLength, createdAt: serverTimestamp(),
     });
     if (uniqueReference) tx.create(uniqueReference, { uid: caller.uid, auctionId, paymentId: paymentRef.id, createdAt: serverTimestamp() });
     tx.set(rateRef, { hourBucket, count, updatedAt: serverTimestamp() });

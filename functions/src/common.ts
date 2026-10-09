@@ -70,6 +70,48 @@ export function millis(value: unknown, field: string): number {
   return parsed;
 }
 
+const MAX_FIRESTORE_IMAGE_BYTES = 300 * 1024;
+
+function jpegDimensions(bytes: Buffer): { width: number; height: number } | null {
+  if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return null;
+  const startOfFrame = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+  let offset = 2;
+  while (offset + 4 < bytes.length) {
+    if (bytes[offset] !== 0xff) { offset += 1; continue; }
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1;
+    if (offset >= bytes.length) return null;
+    const marker = bytes[offset++];
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
+    if (offset + 2 > bytes.length) return null;
+    const segmentLength = bytes.readUInt16BE(offset);
+    if (segmentLength < 2 || offset + segmentLength > bytes.length) return null;
+    if (startOfFrame.has(marker)) {
+      if (segmentLength < 8) return null;
+      return { height: bytes.readUInt16BE(offset + 3), width: bytes.readUInt16BE(offset + 5) };
+    }
+    offset += segmentLength;
+  }
+  return null;
+}
+
+export function validateFirestoreJpeg(value: unknown, field = "Image"): { dataUrl: string; byteLength: number } {
+  if (typeof value !== "string" || value.length > 420_000) {
+    throw new HttpsError("invalid-argument", `${field} must be a compressed JPEG no larger than 300 KiB.`);
+  }
+  const match = /^data:image\/jpeg;base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+  if (!match || match[1].length % 4 !== 0) throw new HttpsError("invalid-argument", `${field} must be a valid JPEG image.`);
+  const bytes = Buffer.from(match[1], "base64");
+  if (bytes.length === 0 || bytes.length > MAX_FIRESTORE_IMAGE_BYTES || bytes.toString("base64") !== match[1]) {
+    throw new HttpsError("invalid-argument", `${field} must be a valid JPEG no larger than 300 KiB.`);
+  }
+  const dimensions = jpegDimensions(bytes);
+  if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0 || dimensions.width > 4096 || dimensions.height > 4096 || dimensions.width * dimensions.height > 16_000_000) {
+    throw new HttpsError("invalid-argument", `${field} has invalid or excessive image dimensions.`);
+  }
+  return { dataUrl: value, byteLength: bytes.length };
+}
+
 export function auditData(actorUid: string, action: string, entityType: string, entityId: string) {
   return { actorUid, action, entityType, entityId, createdAt: serverTimestamp() };
 }

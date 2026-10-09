@@ -1,9 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
-import { getStorage } from "firebase-admin/storage";
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { CALLABLE_OPTIONS, db, finiteNumber, millis, millisFromFirestore, requireActive, requireAdmin, requireCaller, requireOwnerOrAdmin, requireUser, serverTimestamp, text, writeAuditInTransaction } from "./common";
+import { CALLABLE_OPTIONS, db, finiteNumber, millis, millisFromFirestore, requireActive, requireAdmin, requireCaller, requireOwnerOrAdmin, requireUser, serverTimestamp, text, validateFirestoreJpeg, writeAuditInTransaction } from "./common";
 import { parseAmountCents, selectLowestUniqueAmount } from "./domain";
 
 function centsFromInput(value: unknown): number {
@@ -11,32 +10,6 @@ function centsFromInput(value: unknown): number {
     return parseAmountCents(value);
   } catch (error) {
     throw new HttpsError("invalid-argument", error instanceof Error ? error.message : "Bid amount is invalid.");
-  }
-}
-
-async function validateUploadedImage(uid: string, imageStoragePath: string, imageUrl: string): Promise<void> {
-  if (!imageStoragePath.startsWith(`product-images/${uid}/`)) {
-    throw new HttpsError("permission-denied", "Upload the product image to your own Firebase Storage folder first.");
-  }
-  let url: URL;
-  try {
-    url = new URL(imageUrl);
-  } catch {
-    throw new HttpsError("invalid-argument", "The product image URL is invalid.");
-  }
-  if (url.hostname !== "firebasestorage.googleapis.com" || !url.pathname.includes(encodeURIComponent(imageStoragePath))) {
-    throw new HttpsError("invalid-argument", "The product image must be served from this Firebase project.");
-  }
-  try {
-    const [metadata] = await getStorage().bucket().file(imageStoragePath).getMetadata();
-    const size = Number(metadata.size ?? 0);
-    const contentType = String(metadata.contentType ?? "");
-    if (!contentType.match(/^image\/(jpeg|png|webp)$/) || size <= 0 || size > 5 * 1024 * 1024) {
-      throw new HttpsError("invalid-argument", "Product images must be JPEG, PNG, or WebP and no larger than 5 MB.");
-    }
-  } catch (error) {
-    if (error instanceof HttpsError) throw error;
-    throw new HttpsError("failed-precondition", "The uploaded product image could not be verified.");
   }
 }
 
@@ -51,8 +24,7 @@ export const createAuction = onCall(CALLABLE_OPTIONS, async (request) => {
   const category = text(data.category, "Category", 80, 2);
   const description = text(data.description, "Description", 5000, 20);
   const sellerName = text(data.sellerName, "Seller name", 100, 2);
-  const imageStoragePath = text(data.imageStoragePath, "Image storage path", 500, 10);
-  const imagePath = text(data.imagePath, "Image URL", 2000, 20);
+  const image = validateFirestoreJpeg(data.imageDataUrl, "Product image");
   const bidFee = finiteNumber(data.bidFee, "Bid fee", 0, 1000000);
   const minBid = finiteNumber(data.minBid, "Minimum bid", 0.01, 10000000);
   const maxBid = finiteNumber(data.maxBid, "Maximum bid", minBid, 10000000);
@@ -63,21 +35,22 @@ export const createAuction = onCall(CALLABLE_OPTIONS, async (request) => {
   if (startsAtMs <= Date.now() - 60_000 || endsAtMs <= startsAtMs) {
     throw new HttpsError("invalid-argument", "Closing time must be after the opening time, and the opening time cannot be in the past.");
   }
-  await validateUploadedImage(caller.uid, imageStoragePath, imagePath);
-
   const auctionRef = db.collection("auctions").doc();
   const productRef = db.collection("products").doc(auctionRef.id);
+  const imageRef = db.doc(`auctionImages/${auctionRef.id}`);
+  const imagePath = `firestore-image:${auctionRef.id}`;
   const ownerProfile = await db.doc(`users/${caller.uid}`).get();
   const ownerName = String(ownerProfile.get("name") ?? caller.token.name ?? sellerName);
   const stamp = serverTimestamp();
   const batch = db.batch();
+  batch.create(imageRef, { auctionId: auctionRef.id, ownerUid: caller.uid, imageDataUrl: image.dataUrl, contentType: "image/jpeg", byteLength: image.byteLength, createdAt: stamp, updatedAt: stamp });
   batch.create(productRef, {
     productId: productRef.id, ownerUid: caller.uid, title, category, description,
-    imagePath, imageStoragePath, sellerName, status: "draft", createdAt: stamp, updatedAt: stamp,
+    imagePath, sellerName, status: "draft", createdAt: stamp, updatedAt: stamp,
   });
   batch.create(auctionRef, {
     productId: productRef.id, ownerUid: caller.uid, ownerName, title, category, description,
-    imagePath, imageStoragePath, sellerName, bidFee, minBid, maxBid, maxBidsPerUser,
+    imagePath, sellerName, bidFee, minBid, maxBid, maxBidsPerUser,
     startsAt: Timestamp.fromMillis(startsAtMs), endsAt: Timestamp.fromMillis(endsAtMs),
     status: "draft", bidCount: 0, createdAt: stamp, updatedAt: stamp,
   });
@@ -202,27 +175,20 @@ export const updateAuction = onCall(CALLABLE_OPTIONS, async (request) => {
 
   const auctionRef = db.doc(`auctions/${auctionId}`);
   const productRef = db.doc(`products/${auctionId}`);
+  const imageRef = db.doc(`auctionImages/${auctionId}`);
   const existing = await auctionRef.get();
   if (!existing.exists) throw new HttpsError("not-found", "Auction not found.");
   if (existing.get("ownerUid") !== caller.uid && caller.token.admin !== true) throw new HttpsError("permission-denied", "You do not own this listing.");
   if (!["draft", "rejected", "closed"].includes(String(existing.get("status")))) throw new HttpsError("failed-precondition", "Close the auction before editing it.");
   if (Number(existing.get("bidCount") ?? 0) !== 0) throw new HttpsError("failed-precondition", "An auction with accepted bids cannot be edited.");
 
-  let imagePath = String(existing.get("imagePath") ?? "");
-  let imageStoragePath = String(existing.get("imageStoragePath") ?? "");
-  const suppliedImagePath = data.imagePath;
-  const suppliedStoragePath = data.imageStoragePath;
-  if ((suppliedImagePath === undefined) !== (suppliedStoragePath === undefined)) {
-    throw new HttpsError("invalid-argument", "Provide both image references when changing the product image.");
+  const image = data.imageDataUrl === undefined ? null : validateFirestoreJpeg(data.imageDataUrl, "Product image");
+  const imagePath = `firestore-image:${auctionId}`;
+  if (!image && String(existing.get("imagePath") ?? "") !== imagePath) {
+    throw new HttpsError("failed-precondition", "Choose a new image to move this older listing into Firestore image storage.");
   }
-  if (suppliedImagePath !== undefined && suppliedStoragePath !== undefined) {
-    const nextImagePath = text(suppliedImagePath, "Image URL", 2000, 20);
-    const nextStoragePath = text(suppliedStoragePath, "Image storage path", 500, 10);
-    if (nextImagePath !== imagePath || nextStoragePath !== imageStoragePath) {
-      await validateUploadedImage(caller.uid, nextStoragePath, nextImagePath);
-      imagePath = nextImagePath;
-      imageStoragePath = nextStoragePath;
-    }
+  if (!image && !(await imageRef.get()).exists) {
+    throw new HttpsError("failed-precondition", "Choose a replacement image; the existing Firestore image is missing.");
   }
 
   await db.runTransaction(async (tx) => {
@@ -232,13 +198,14 @@ export const updateAuction = onCall(CALLABLE_OPTIONS, async (request) => {
     if (!["draft", "rejected", "closed"].includes(String(current.get("status")))) throw new HttpsError("failed-precondition", "Close the auction before editing it.");
     if (Number(current.get("bidCount") ?? 0) !== 0) throw new HttpsError("failed-precondition", "An auction with accepted bids cannot be edited.");
     const fields = {
-      title, category, description, sellerName, imagePath, imageStoragePath, bidFee, minBid, maxBid, maxBidsPerUser,
+      title, category, description, sellerName, imagePath, imageStoragePath: FieldValue.delete(), bidFee, minBid, maxBid, maxBidsPerUser,
       startsAt: Timestamp.fromMillis(startsAtMs), endsAt: Timestamp.fromMillis(endsAtMs),
       status: "draft", closedForEditing: false, reviewNote: null,
       closedAt: FieldValue.delete(), publishedAt: FieldValue.delete(), publishedBy: FieldValue.delete(), updatedAt: serverTimestamp(),
     };
+    if (image) tx.set(imageRef, { auctionId, ownerUid: String(current.get("ownerUid") ?? caller.uid), imageDataUrl: image.dataUrl, contentType: "image/jpeg", byteLength: image.byteLength, updatedAt: serverTimestamp() }, { merge: true });
     tx.update(auctionRef, fields);
-    tx.set(productRef, { title, category, description, sellerName, imagePath, imageStoragePath, status: "draft", updatedAt: serverTimestamp() }, { merge: true });
+    tx.set(productRef, { title, category, description, sellerName, imagePath, imageStoragePath: FieldValue.delete(), status: "draft", updatedAt: serverTimestamp() }, { merge: true });
     writeAuditInTransaction(tx, caller.uid, "auction.edited_as_draft", "auction", auctionId);
   });
   return { auctionId, status: "draft" };

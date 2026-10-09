@@ -49,7 +49,6 @@ export type AuctionRecord = {
   description?: string;
   category: string;
   imagePath: string;
-  imageStoragePath?: string;
   productId?: string;
   ownerUid?: string;
   ownerName?: string;
@@ -114,7 +113,7 @@ export type ReportRecord = {
   adminReply: string | null;
   createdAt: Date;
 };
-export type PaymentRecord = { id: string; uid: string; auctionId: string; auctionTitle: string; amount: number; provider: string; providerReference: string; status: "pending" | "paid" | "failed"; used: boolean; createdAt: Date; source: "manual" | "bidder_proof"; proofStoragePath: string | null; ocrText: string | null; ocrStatusHint: "success_terms" | "failure_terms" | "unclear" | null; verificationNote: string | null };
+export type PaymentRecord = { id: string; uid: string; auctionId: string; auctionTitle: string; amount: number; provider: string; providerReference: string; status: "pending" | "paid" | "failed"; used: boolean; createdAt: Date; source: "manual" | "bidder_proof"; hasReceiptImage: boolean; ocrText: string | null; ocrStatusHint: "success_terms" | "failure_terms" | "unclear" | null; verificationNote: string | null };
 export type AuditRecord = { id: string; action: string; entityType: string; entityId: string; actorUid: string; createdAt: Date };
 export type NotificationRecord = { id: string; type: string; titleKey: string; bodyKey: string; params: Record<string, string>; createdAt: Date; readAt: Date | null };
 export type DeviceRecord = { id: string; label: string; userAgent: string; firstSeen: Date; lastSeen: Date; current: boolean };
@@ -146,7 +145,7 @@ const readAuction = (snapshot: QueryDocumentSnapshot<DocumentData>): AuctionReco
   const data = snapshot.data();
   return {
     id: snapshot.id, title: String(data.title ?? "Auction"), description: typeof data.description === "string" ? data.description : "",
-    category: String(data.category ?? "Other"), imagePath: String(data.imagePath ?? ""), imageStoragePath: String(data.imageStoragePath ?? ""),
+    category: String(data.category ?? "Other"), imagePath: String(data.imagePath ?? ""),
     productId: String(data.productId ?? snapshot.id), ownerUid: typeof data.ownerUid === "string" ? data.ownerUid : undefined,
     ownerName: typeof data.ownerName === "string" ? data.ownerName : undefined, sellerName: String(data.sellerName ?? "Tesaka Cherta"),
     bidFee: numberValue(data.bidFee), minBid: numberValue(data.minBid, 0.1), maxBid: numberValue(data.maxBid, 100),
@@ -247,7 +246,7 @@ function readPaymentRecord(id: string, uid: string, data: DocumentData): Payment
     amount: numberValue(data.amount), provider: String(data.provider ?? "manual"), providerReference: String(data.providerReference ?? ""),
     status: data.status === "paid" || data.status === "failed" ? data.status : "pending", used: data.used === true, createdAt: toDate(data.createdAt),
     source: data.source === "bidder_proof" ? "bidder_proof" : "manual",
-    proofStoragePath: typeof data.proofStoragePath === "string" ? data.proofStoragePath : null,
+    hasReceiptImage: data.hasReceiptImage === true,
     ocrText: typeof data.ocrText === "string" ? data.ocrText : null,
     ocrStatusHint: hint === "success_terms" || hint === "failure_terms" || hint === "unclear" ? hint : null,
     verificationNote: typeof data.verificationNote === "string" ? data.verificationNote : null,
@@ -264,7 +263,7 @@ export async function listAvailablePayments(uid: string, auctionId: string): Pro
   return records.filter((payment) => payment.auctionId === auctionId && payment.status === "paid" && !payment.used);
 }
 
-export async function submitUserPaymentProof(input: { auctionId: string; provider: string; providerReference?: string; proofStoragePath?: string; ocrText?: string }) {
+export async function submitUserPaymentProof(input: { auctionId: string; provider: string; providerReference?: string; proofImageDataUrl?: string; ocrText?: string }) {
   return submitPaymentProofCall(input);
 }
 
@@ -307,22 +306,22 @@ export async function listOwnerAuctions(uid: string): Promise<AuctionRecord[]> {
   return snapshot.docs.map(readAuction);
 }
 
-export async function createFirestoreAuction(_actorUid: string, input: Omit<AuctionRecord, "id" | "bidCount" | "createdAt" | "status"> & { description: string; imageStoragePath: string }) {
+export async function createFirestoreAuction(_actorUid: string, input: Omit<AuctionRecord, "id" | "bidCount" | "createdAt" | "status" | "imagePath"> & { description: string; imageDataUrl: string }) {
   const request: CreateAuctionInput = {
     title: input.title, category: input.category, description: input.description, sellerName: input.sellerName,
-    imagePath: input.imagePath, imageStoragePath: input.imageStoragePath, bidFee: input.bidFee,
+    imageDataUrl: input.imageDataUrl, bidFee: input.bidFee,
     minBid: input.minBid, maxBid: input.maxBid, maxBidsPerUser: input.maxBidsPerUser,
     startsAtMs: input.startsAt.getTime(), endsAtMs: input.endsAt.getTime(),
   };
   return createAuctionCall(request);
 }
 
-export async function updateFirestoreAuction(_actorUid: string, auctionId: string, input: Omit<AuctionRecord, "id" | "bidCount" | "createdAt" | "status"> & { description: string; imageStoragePath?: string }) {
+export async function updateFirestoreAuction(_actorUid: string, auctionId: string, input: Omit<AuctionRecord, "id" | "bidCount" | "createdAt" | "status" | "imagePath"> & { description: string; imageDataUrl?: string }) {
   const request: UpdateAuctionInput = {
     auctionId, title: input.title, category: input.category, description: input.description, sellerName: input.sellerName,
     bidFee: input.bidFee, minBid: input.minBid, maxBid: input.maxBid, maxBidsPerUser: input.maxBidsPerUser,
     startsAtMs: input.startsAt.getTime(), endsAtMs: input.endsAt.getTime(),
-    ...(input.imageStoragePath ? { imagePath: input.imagePath, imageStoragePath: input.imageStoragePath } : {}),
+    ...(input.imageDataUrl ? { imageDataUrl: input.imageDataUrl } : {}),
   };
   return updateAuctionCall(request);
 }

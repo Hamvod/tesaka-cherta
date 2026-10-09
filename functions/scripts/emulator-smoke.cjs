@@ -2,11 +2,9 @@ const assert = require("node:assert/strict");
 const { initializeApp, deleteApp } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore, Timestamp } = require("firebase-admin/firestore");
-const { getStorage } = require("firebase-admin/storage");
 
 process.env.FIREBASE_AUTH_EMULATOR_HOST ||= "127.0.0.1:9099";
 process.env.FIRESTORE_EMULATOR_HOST ||= "127.0.0.1:8080";
-process.env.STORAGE_EMULATOR_HOST ||= "127.0.0.1:9199";
 const projectId = process.env.GCLOUD_PROJECT || "demo-tesaka-cherta";
 const app = initializeApp({ projectId }, `emulator-smoke-${Date.now()}`);
 const auth = getAuth(app);
@@ -56,15 +54,19 @@ async function queryPaymentGroup(idToken) {
   });
 }
 
-async function uploadReceiptAsUser(bucketName, objectPath, idToken) {
-  return fetch(`http://127.0.0.1:9199/v0/b/${encodeURIComponent(bucketName)}/o?uploadType=media&name=${encodeURIComponent(objectPath)}`, {
-    method: "POST", headers: { authorization: `Bearer ${idToken}`, "content-type": "image/png" }, body: Buffer.from("local emulator receipt image"),
-  });
+const testJpeg = `data:image/jpeg;base64,${Buffer.from([
+  0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01,
+  0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xd9,
+]).toString("base64")}`;
+
+async function readDocumentAsUser(documentPath, idToken) {
+  const headers = idToken ? { authorization: `Bearer ${idToken}` } : {};
+  return fetch(`http://127.0.0.1:8080/v1/projects/${projectId}/databases/(default)/documents/${documentPath}`, { headers });
 }
 
-async function readReceiptAsUser(bucketName, objectPath, idToken) {
-  return fetch(`http://127.0.0.1:9199/v0/b/${encodeURIComponent(bucketName)}/o/${encodeURIComponent(objectPath)}?alt=media`, {
-    headers: { authorization: `Bearer ${idToken}` },
+async function deleteDocumentAsUser(documentPath, idToken) {
+  return fetch(`http://127.0.0.1:8080/v1/projects/${projectId}/databases/(default)/documents/${documentPath}`, {
+    method: "DELETE", headers: { authorization: `Bearer ${idToken}` },
   });
 }
 
@@ -91,15 +93,14 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   });
   await callFunction("reviewOwnerApplication", admin.idToken, { uid: owner.uid, decision: "approve", note: "Verified in emulator." });
   const ownerIdToken = await signIn(owner.email);
-  const bucketName = "studio-7668403722-dc933.firebasestorage.app";
-  const imageStoragePath = `product-images/${owner.uid}/emulator-${Date.now()}.png`;
-  await getStorage(app).bucket(bucketName).file(imageStoragePath).save(Buffer.from("local-emulator-image"), {
-    metadata: { contentType: "image/png" },
-  });
-  const imagePath = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(imageStoragePath)}?alt=media&token=local-emulator`;
+  await expectCallableError("createAuction", ownerIdToken, {
+    title: "Invalid image listing", category: "Test", description: "This listing deliberately submits an invalid image payload.",
+    sellerName: "Emulator Seller Shop", imageDataUrl: "data:image/jpeg;base64,SGVsbG8=", bidFee: 1, minBid: 0.1, maxBid: 100,
+    maxBidsPerUser: 5, startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
+  }, "INVALID_ARGUMENT");
   const ownerAuction = await callFunction("createAuction", ownerIdToken, {
     title: "Owner emulator listing", category: "Test", description: "A seller-created product listing for local emulator validation.",
-    sellerName: "Emulator Seller Shop", imageStoragePath, imagePath, bidFee: 1, minBid: 0.1, maxBid: 100,
+    sellerName: "Emulator Seller Shop", imageDataUrl: testJpeg, bidFee: 1, minBid: 0.1, maxBid: 100,
     maxBidsPerUser: 5, startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
   });
   assert.equal(ownerAuction.status, "draft");
@@ -107,9 +108,18 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   const listingReview = await callFunction("reviewAuction", admin.idToken, { auctionId: ownerAuction.auctionId, decision: "approve" });
   assert.equal(listingReview.status, "approve");
   assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("status"), "published");
+  assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("imagePath"), `firestore-image:${ownerAuction.auctionId}`);
   assert.equal((await auth.getUser(owner.uid)).customClaims.owner, true);
+  const publicImageRead = await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`);
+  assert.equal(publicImageRead.ok, true, "Published auction image should be publicly readable from Firestore");
+  assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, bidders[0].idToken)).ok, true, "A bidder should read a public Firestore auction image");
+  assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, ownerIdToken)).ok, true, "The listing owner should read its Firestore image");
+  assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, admin.idToken)).ok, true, "Admin should read Firestore auction images");
+  assert.equal((await deleteDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, ownerIdToken)).status, 403, "Browser writes to auction image documents must be denied");
   await callFunction("closeAuctionForEditing", admin.idToken, { auctionId: ownerAuction.auctionId });
   assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("status"), "closed");
+  assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, bidders[0].idToken)).status, 403, "Draft/closed listing images must not be public");
+  assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, ownerIdToken)).ok, true, "The listing owner retains access while editing");
   const editedAuction = await callFunction("updateAuction", admin.idToken, {
     auctionId: ownerAuction.auctionId, title: "Edited owner emulator listing", category: "Test",
     description: "Edited using the trusted callable, retaining the already uploaded image.", sellerName: "Emulator Seller Shop",
@@ -119,7 +129,8 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   assert.equal(editedAuction.status, "draft");
   const editedDoc = await db.doc(`auctions/${ownerAuction.auctionId}`).get();
   assert.equal(editedDoc.get("title"), "Edited owner emulator listing");
-  assert.equal(editedDoc.get("imageStoragePath"), imageStoragePath, "Editing should retain the existing product image when no replacement is selected");
+  assert.equal(editedDoc.get("imagePath"), `firestore-image:${ownerAuction.auctionId}`, "Editing should retain the existing Firestore image when no replacement is selected");
+  assert.equal((await db.doc(`auctionImages/${ownerAuction.auctionId}`).get()).get("imageDataUrl"), testJpeg, "Image document should remain separate from listing metadata");
   assert.equal((await db.doc(`products/${ownerAuction.auctionId}`).get()).get("status"), "draft");
   await callFunction("publishAuction", admin.idToken, { auctionId: ownerAuction.auctionId });
   assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("status"), "published");
@@ -132,20 +143,20 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
     startsAt: Timestamp.fromMillis(Date.now() - 60_000), endsAt: Timestamp.fromMillis(Date.now() + 60 * 60_000),
     status: "live", bidCount: 0, createdAt: Timestamp.now(),
   });
-  const proofStoragePath = `payment-receipts/${bidders[3].uid}/receipt-${Date.now()}.png`;
-  const uploadResponse = await uploadReceiptAsUser(bucketName, proofStoragePath, bidders[3].idToken);
-  assert.equal(uploadResponse.ok, true, `Bidder should upload own private receipt: ${await uploadResponse.text()}`);
-  assert.equal((await readReceiptAsUser(bucketName, proofStoragePath, bidders[3].idToken)).ok, true, "Receipt owner should be able to read its upload");
-  assert.equal((await readReceiptAsUser(bucketName, proofStoragePath, bidders[0].idToken)).status, 403, "Another bidder must not read a private receipt");
-  assert.equal((await readReceiptAsUser(bucketName, proofStoragePath, admin.idToken)).ok, true, "Admin must be able to inspect a private receipt");
   const submittedProof = await callFunction("submitPaymentProof", bidders[3].idToken, {
     auctionId: proofAuctionId, provider: "Telebirr", providerReference: `PROOF-${Date.now()}`,
-    proofStoragePath, ocrText: "Transfer completed successfully",
+    proofImageDataUrl: testJpeg, ocrText: "Transfer completed successfully",
   });
   assert.equal(submittedProof.status, "pending", "OCR must never automatically verify payment");
   assert.equal(submittedProof.ocrStatusHint, "success_terms", "OCR should return a non-authoritative success-word hint");
   const pendingProofRef = db.doc(`users/${bidders[3].uid}/payments/${submittedProof.paymentId}`);
   assert.equal((await pendingProofRef.get()).get("status"), "pending");
+  assert.equal((await pendingProofRef.get()).get("hasReceiptImage"), true, "The payment list record should only contain a receipt flag");
+  const proofDocPath = `users/${bidders[3].uid}/payments/${submittedProof.paymentId}/proofs/receipt`;
+  assert.equal((await readDocumentAsUser(proofDocPath, bidders[3].idToken)).ok, true, "Receipt owner should read its private Firestore proof document");
+  assert.equal((await readDocumentAsUser(proofDocPath, bidders[0].idToken)).status, 403, "Another bidder must not read the private Firestore proof document");
+  assert.equal((await readDocumentAsUser(proofDocPath, admin.idToken)).ok, true, "Admin should inspect the private Firestore proof document");
+  assert.equal((await deleteDocumentAsUser(proofDocPath, bidders[3].idToken)).status, 403, "Browser writes to private payment proof documents must be denied");
   assert.equal((await queryPaymentGroup(admin.idToken)).ok, true, "Admin collection-group payment query should be allowed by Firestore Rules");
   assert.equal((await queryPaymentGroup(bidders[0].idToken)).status, 403, "Non-admin collection-group payment query should be denied");
   await expectCallableError("placeBid", bidders[3].idToken, { auctionId: proofAuctionId, amount: 1.25, paymentId: submittedProof.paymentId }, "FAILED_PRECONDITION");
@@ -201,10 +212,10 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   await expectCallableError("placeBid", bidders[0].idToken, { auctionId, amount: 1, paymentId: `pay-${bidders[0].uid}` }, "FAILED_PRECONDITION");
 
   console.log(JSON.stringify({
-    ok: true, projectId, ownerApplicationAndListing: "approved, uploaded, reviewed, published, closed for editing, updated, and republished", auctionId, acceptedBids: 3, rejectedUnpaidBid: true,
+    ok: true, projectId, ownerApplicationAndListing: "approved, image stored in Firestore, reviewed, published, closed for editing, updated, and republished", auctionId, acceptedBids: 3, rejectedUnpaidBid: true,
     duplicateAmount: 8, winner: "Bidder 2", winningAmount: result.winningAmount,
     resultReference: result.referenceCode, resultHash: result.resultHash,
-    callableCorsAllowlist: true, privateReceiptAccessRules: true, paymentProofReviewAndUse: true, adminOnlyPaymentCollectionGroupRead: true,
+    callableCorsAllowlist: true, invalidImageRejected: true, publicFirestoreAuctionImageRead: true, draftImagePrivacyAndNoClientWrites: true, privateFirestoreReceiptAccess: true, paymentProofReviewAndUse: true, adminOnlyPaymentCollectionGroupRead: true,
     paymentConsumed: true, winnerRecordAndNotifications: true,
   }, null, 2));
 })().catch((error) => {
