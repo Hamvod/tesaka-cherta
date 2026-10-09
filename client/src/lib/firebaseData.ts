@@ -22,6 +22,7 @@ import { firestore } from "./firebase";
 import {
   createAuctionCall,
   closeAuctionForEditingCall,
+  deleteAuctionCall,
   finalizeAuctionCall,
   placeBidCall,
   publishAuctionCall,
@@ -327,6 +328,10 @@ export async function updateFirestoreAuction(_actorUid: string, auctionId: strin
     ...(input.imageDataUrl ? { imageDataUrl: input.imageDataUrl } : {}),
   };
   return updateAuctionCall(request);
+}
+
+export async function deleteFirestoreAuction(_actorUid: string, auctionId: string) {
+  return deleteAuctionCall({ auctionId });
 }
 
 export async function submitAuctionReview(_actorUid: string, auctionId: string) { return submitAuctionForReviewCall({ auctionId }); }

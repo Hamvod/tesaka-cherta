@@ -41,6 +41,7 @@ export type UpdateAuctionInput = Omit<CreateAuctionInput, "imageDataUrl"> & {
 
 export const createAuctionCall = callable<CreateAuctionInput, { auctionId: string; status: string }>("createAuction");
 export const updateAuctionCall = callable<UpdateAuctionInput, { auctionId: string; status: string }>("updateAuction");
+export const deleteAuctionCall = callable<{ auctionId: string }, { auctionId: string; status: string }>("deleteAuction");
 export const closeAuctionForEditingCall = callable<{ auctionId: string }, { status: string }>("closeAuctionForEditing");
 export const submitAuctionForReviewCall = callable<{ auctionId: string }, { status: string }>("submitAuctionForReview");
 export const reviewAuctionCall = callable<{ auctionId: string; decision: "approve" | "reject"; note?: string }, { status: string }>("reviewAuction");

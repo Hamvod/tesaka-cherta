@@ -136,7 +136,7 @@ export const publishAuction = onCall(CALLABLE_OPTIONS, async (request) => {
 });
 
 export const closeAuctionForEditing = onCall(CALLABLE_OPTIONS, async (request) => {
-  const caller = await requireAdmin(request);
+  const caller = await requireOwnerOrAdmin(request);
   const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
   const auctionRef = db.doc(`auctions/${auctionId}`);
   const productRef = db.doc(`products/${auctionId}`);
@@ -144,6 +144,7 @@ export const closeAuctionForEditing = onCall(CALLABLE_OPTIONS, async (request) =
     const snapshot = await tx.get(auctionRef);
     if (!snapshot.exists) throw new HttpsError("not-found", "Auction not found.");
     const status = String(snapshot.get("status"));
+    if (snapshot.get("ownerUid") !== caller.uid && caller.token.admin !== true) throw new HttpsError("permission-denied", "You do not own this listing.");
     if (!["published", "live"].includes(status)) throw new HttpsError("failed-precondition", "Only a published or live auction can be closed for editing.");
     if (millisFromFirestore(snapshot.get("endsAt")) <= Date.now()) throw new HttpsError("failed-precondition", "An auction whose scheduled end time has passed cannot be reopened for editing.");
     if (Number(snapshot.get("bidCount") ?? 0) !== 0) throw new HttpsError("failed-precondition", "An auction with accepted bids cannot be edited.");
@@ -152,6 +153,28 @@ export const closeAuctionForEditing = onCall(CALLABLE_OPTIONS, async (request) =
     writeAuditInTransaction(tx, caller.uid, "auction.closed_for_editing", "auction", auctionId);
   });
   return { status: "closed" };
+});
+
+export const deleteAuction = onCall(CALLABLE_OPTIONS, async (request) => {
+  const caller = await requireOwnerOrAdmin(request);
+  const auctionId = text(request.data.auctionId, "Auction ID", 128, 5);
+  const auctionRef = db.doc(`auctions/${auctionId}`);
+  const productRef = db.doc(`products/${auctionId}`);
+  const imageRef = db.doc(`auctionImages/${auctionId}`);
+  await db.runTransaction(async (tx) => {
+    const [auction, product, image] = await Promise.all([tx.get(auctionRef), tx.get(productRef), tx.get(imageRef)]);
+    if (!auction.exists) throw new HttpsError("not-found", "Auction not found.");
+    if (auction.get("ownerUid") !== caller.uid && caller.token.admin !== true) throw new HttpsError("permission-denied", "You do not own this listing.");
+    if (!["draft", "rejected", "closed", "published", "live"].includes(String(auction.get("status")))) {
+      throw new HttpsError("failed-precondition", "Only an unfinished auction can be deleted.");
+    }
+    if (Number(auction.get("bidCount") ?? 0) !== 0) throw new HttpsError("failed-precondition", "Auctions with accepted bids cannot be deleted.");
+    tx.delete(auctionRef);
+    if (product.exists) tx.delete(productRef);
+    if (image.exists) tx.delete(imageRef);
+    writeAuditInTransaction(tx, caller.uid, "auction.deleted", "auction", auctionId);
+  });
+  return { auctionId, status: "deleted" };
 });
 
 export const updateAuction = onCall(CALLABLE_OPTIONS, async (request) => {
@@ -198,14 +221,14 @@ export const updateAuction = onCall(CALLABLE_OPTIONS, async (request) => {
     if (!["draft", "rejected", "closed"].includes(String(current.get("status")))) throw new HttpsError("failed-precondition", "Close the auction before editing it.");
     if (Number(current.get("bidCount") ?? 0) !== 0) throw new HttpsError("failed-precondition", "An auction with accepted bids cannot be edited.");
     const fields = {
-      title, category, description, sellerName, imagePath, imageStoragePath: FieldValue.delete(), bidFee, minBid, maxBid, maxBidsPerUser,
+      title, category, description, sellerName, imagePath, bidFee, minBid, maxBid, maxBidsPerUser,
       startsAt: Timestamp.fromMillis(startsAtMs), endsAt: Timestamp.fromMillis(endsAtMs),
       status: "draft", closedForEditing: false, reviewNote: null,
       closedAt: FieldValue.delete(), publishedAt: FieldValue.delete(), publishedBy: FieldValue.delete(), updatedAt: serverTimestamp(),
     };
     if (image) tx.set(imageRef, { auctionId, ownerUid: String(current.get("ownerUid") ?? caller.uid), imageDataUrl: image.dataUrl, contentType: "image/jpeg", byteLength: image.byteLength, updatedAt: serverTimestamp() }, { merge: true });
     tx.update(auctionRef, fields);
-    tx.set(productRef, { title, category, description, sellerName, imagePath, imageStoragePath: FieldValue.delete(), status: "draft", updatedAt: serverTimestamp() }, { merge: true });
+    tx.set(productRef, { title, category, description, sellerName, imagePath, status: "draft", updatedAt: serverTimestamp() }, { merge: true });
     writeAuditInTransaction(tx, caller.uid, "auction.edited_as_draft", "auction", auctionId);
   });
   return { auctionId, status: "draft" };
