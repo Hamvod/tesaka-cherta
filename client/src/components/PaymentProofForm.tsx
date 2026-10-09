@@ -22,6 +22,7 @@ export default function PaymentProofForm({ auctionId, auctionTitle, fee, onSubmi
   const fileSelectionId = useRef(0);
   const am = language === "am";
   const inputClass = "rounded-lg border border-[#d7d8c9] bg-white px-3 py-2.5 text-sm font-normal text-[#173f36]";
+  const paymentAccount = provider === "Telebirr" ? "0983019516" : "1000766215908";
 
   const chooseFile = (next: File | null) => {
     const selectionId = ++fileSelectionId.current;
@@ -81,7 +82,15 @@ export default function PaymentProofForm({ auctionId, auctionTitle, fee, onSubmi
   const hint = ocrText ? inferReceiptStatusHint(ocrText) : "unclear";
   return <form onSubmit={(event) => void submit(event)} className="mt-4 grid gap-3 rounded-xl border border-[#e6dccb] bg-white p-4">
     <div><strong className="text-sm">{am ? "የክፍያ ማስረጃ ያስገቡ" : "Submit payment proof"}</strong><p className="mt-1 text-xs leading-5 text-[#737e73]">{am ? `${auctionTitle} · ${fee.toFixed(2)} ETB። TIN አያስፈልግም።` : `${auctionTitle} · ${fee.toFixed(2)} ETB. No TIN is requested.`}</p></div>
-    <label className="grid gap-1 text-xs font-bold">{am ? "የክፍያ አቅራቢ" : "Payment provider"}<select value={provider} onChange={(event) => setProvider(event.target.value)} className={inputClass}><option>Telebirr</option><option>CBE Birr</option><option>Awash</option><option>{am ? "ሌላ" : "Other"}</option></select></label>
+    <label className="grid gap-1 text-xs font-bold">{am ? "የክፍያ አቅራቢ" : "Payment provider"}<select value={provider} onChange={(event) => setProvider(event.target.value)} className={inputClass}><option>Telebirr</option><option>CBE Birr</option></select></label>
+    <div className="rounded-xl border border-[#dce4d7] bg-[#f5f8f1] p-4" aria-live="polite">
+      <strong className="block text-xs font-bold text-[#0b5f4a]">{am ? `${fee.toFixed(2)} ETB ወደዚህ ያስተላልፉ` : `Send ${fee.toFixed(2)} ETB to this account`}</strong>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs text-[#596a5f]">{provider === "Telebirr" ? (am ? "የTelebirr ስልክ ቁጥር" : "Telebirr phone number") : (am ? "የCBE Birr አካውንት ቁጥር" : "CBE Birr account number")}</span>
+        <strong className="select-all text-lg tracking-wide text-[#173f36]">{paymentAccount}</strong>
+      </div>
+      <p className="mt-2 text-[11px] leading-5 text-[#737e73]">{am ? "ከከፈሉ በኋላ የግብይት ቁጥሩን ያስገቡ ወይም ደረሰኙን ያስገቡ። ክፍያው ከአስተዳዳሪ ግምገማ በኋላ ብቻ ይረጋገጣል።" : "After transferring, enter the transaction number or attach the receipt. Payment is confirmed only after administrator review."}</p>
+    </div>
     <label className="grid gap-1 text-xs font-bold">{am ? "የግብይት / ማጣቀሻ ቁጥር (አማራጭ)" : "Transaction / reference number (optional)"}<input maxLength={160} value={providerReference} onChange={(event) => setProviderReference(event.target.value)} className={inputClass} placeholder="e.g. FT…" /></label>
     <label className="grid gap-1 text-xs font-bold"><span className="inline-flex items-center gap-2"><FileImage size={14}/>{am ? "የደረሰኝ ስክሪንሾት (አማራጭ)" : "Receipt screenshot (optional)"}</span><input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => chooseFile(event.target.files?.[0] ?? null)} className={inputClass}/><span className="text-[11px] font-normal text-[#7b867c]">{am ? "JPEG/PNG/WebP፣ እስከ 12 MB። OCR በአሳሽዎ ውስጥ ይሰራል፤ ምስሉ ተጨምቆ በFirestore በግል ይቀመጣል (ከ300 KB በታች)።" : "JPEG/PNG/WebP up to 12 MB. OCR runs in your browser; the image is compressed and stored privately in Firestore under 300 KB."}</span></label>
     {file && <div className="rounded-lg bg-[#f8f6ef] p-3 text-xs"><strong>{file.name}</strong>{preparingImage && <span className="ml-2 text-[#0b5f4a]">{am ? "ምስል በማዘጋጀት ላይ…" : "Preparing image for Firestore…"}</span>}{ocrState === "scanning" && <span className="ml-2 text-[#0b5f4a]">{am ? "ማንበብ ላይ" : "Reading"}… {ocrProgress}%</span>}{ocrState === "done" && <div className="mt-1 text-[#596a5f]">{am ? "OCR ጥቆማ" : "OCR hint"}: {hint === "success_terms" ? (am ? "የስኬት ቃላት ተገኝተዋል" : "success-like words found") : hint === "failure_terms" ? (am ? "የአለመሳካት ቃላት ተገኝተዋል" : "failure-like words found") : (am ? "የሁኔታ ቃል አልተለየም" : "no clear status words found")}. {am ? "ይህ ክፍያን አያረጋግጥም።" : "This does not verify payment."}</div>}{ocrState === "failed" && <p className="mt-1 text-[#8c5b1a]">{am ? "OCR አልተሳካም፤ የግብይት ቁጥሩን እራስዎ ያስገቡ።" : "OCR could not read the image; enter the transaction number manually."}</p>}</div>}

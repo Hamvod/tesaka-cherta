@@ -3,7 +3,21 @@ import { functions } from "./firebase";
 
 function callable<Input extends Record<string, unknown>, Output>(name: string) {
   const invoke = httpsCallable<Input, Output>(functions, name);
-  return async (payload: Input): Promise<Output> => (await invoke(payload)).data;
+  return async (payload: Input): Promise<Output> => {
+    try {
+      return (await invoke(payload)).data;
+    } catch (error) {
+      const record = error && typeof error === "object" ? error as { code?: unknown; message?: unknown } : null;
+      const code = typeof record?.code === "string" ? record.code.toLowerCase() : "";
+      const message = typeof record?.message === "string" ? record.message.trim() : "";
+      console.error(`[Firebase callable: ${name}]`, error);
+      if (/^(?:functions\/)?internal(?:\[0\])?$/.test(code) || /^internal(?:\[0\])?$/i.test(message)) {
+        const paymentWarning = /payment|bid/i.test(name) ? " Your payment or bid has not been confirmed." : " Please check the latest state before retrying.";
+        throw new Error(`The server returned an unexpected internal error while running ${name}.${paymentWarning} Please retry; if this continues, contact the administrator and mention “${name}”.`);
+      }
+      throw error;
+    }
+  };
 }
 
 export type CreateAuctionInput = {
