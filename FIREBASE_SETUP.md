@@ -50,17 +50,19 @@ The script verifies that the service account belongs to the configured project, 
 - **Authentication and roles:** Firebase Auth provides email/password sign-in. Admin and approved seller privileges use custom claims, refreshed after role changes.
 - **Firestore reads:** The browser reads permitted public auction/result data and signed-in users' permitted account records directly from Firestore.
 - **Privileged writes:** Cloud Functions validate auction edits, payment review, bids, result calculation, owner approval, moderation, and reports. Browser writes to privileged collections remain denied.
-- **Product images:** The browser converts JPEG/PNG/WebP selections to JPEG and compresses each to at most **300 KiB**. The trusted auction callable validates the base64 image, size, JPEG header, and dimensions before writing a separate `auctionImages/{auctionId}` document. Auction/result documents store only a small `firestore-image:{auctionId}` reference. Images load from Firestore on demand. Large image fields are exempt from indexing.
+- **Product images:** The browser converts JPEG/PNG/WebP selections to JPEG and compresses each to at most **300 KiB**. The trusted auction callable validates the base64 image, size, JPEG header, and dimensions before writing a separate `auctionImages/{auctionId}` document. Auction/result documents store only a small `firestore-image:{auctionId}` reference. Images load from Firestore on demand; image content is never queried.
 - **Payment receipts:** A bidder may submit a provider transaction reference and/or a compressed receipt image. A receipt is written to `users/{uid}/payments/{paymentId}/proofs/receipt`; only that bidder and admins can read it. The payment record itself contains only a `hasReceiptImage` flag and other review metadata.
 
 Firestore's maximum document size is 1 MiB. Images are stored separately and kept below 300 KiB raw to leave room for base64 and Firestore document overhead. Legacy listings that only contain a former Storage URL need a new image selected in the auction editor before they can display from Firestore. Firestore reads/writes and data transfer count toward Firestore quotas and pricing; this avoids Cloud Storage but does not make image usage free.
 
-## Deploy rules, indexes, and Functions
+## Deploy rules and Functions
 
-Deploy the Firestore rules/indexes and Functions together after code or schema changes:
+The app does not require custom composite indexes. Compound queries are kept simple, and results that need sorting are sorted in the client or Function. Firestore still maintains its default single-field indexes automatically; these are required by Firestore and are not a separately deployed index set.
+
+Deploy the Firestore rules and Functions after code or schema changes:
 
 ```sh
-firebase deploy --only firestore:rules,firestore:indexes,functions --project studio-7668403722-dc933
+firebase deploy --only firestore:rules,functions --project studio-7668403722-dc933
 ```
 
 To use Firebase Hosting for the static frontend, build and deploy it separately:
@@ -124,7 +126,7 @@ npx --yes firebase-tools emulators:exec \
 ## Operating limits and security
 
 - **No payment gateway/provider API is connected.** OCR reads visible screenshot text only; it cannot check the provider ledger or detect a forged screenshot. An administrator must independently confirm settlement. A verified payment authorizes one bid only.
-- Keep Firestore rules, indexes, and Functions deployed together. A browser UI is not an authorization boundary; backend validation and deployed rules are.
+- Keep Firestore rules and Functions deployed together. The app has no custom composite-index manifest. A browser UI is not an authorization boundary; backend validation and deployed rules are.
 - The prior SQL data is not automatically migrated. Existing auctions, bids, payments, and results in PostgreSQL are not copied to Firestore.
 - The Firebase web API key is public project configuration. Never place Admin SDK credentials, service-account JSON, payment-provider secrets, or user passwords in the browser bundle or Git.
 - Product and receipt images are intentionally rejected above 300 KiB after compression. Firestore is being used instead of a dedicated object-storage service, so this small-image constraint helps keep the data model inside Firestore's document cap and reasonable usage.

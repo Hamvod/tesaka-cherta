@@ -379,19 +379,28 @@ export const finalizeAuctionNow = onCall(CALLABLE_OPTIONS, async (request) => {
 });
 
 export const processAuctionLifecycle = onSchedule({ schedule: "every 1 minutes", timeZone: "UTC", maxInstances: 1 }, async () => {
-  const now = Timestamp.now();
-  const dueToStart = await db.collection("auctions").where("status", "==", "published").where("startsAt", "<=", now).limit(50).get();
-  await Promise.allSettled(dueToStart.docs.map(async (item) => {
-    await db.runTransaction(async (tx) => {
-      const current = await tx.get(item.ref);
-      if (!current.exists || current.get("status") !== "published") return;
-      if (millisFromFirestore(current.get("startsAt")) > Date.now()) return;
-      tx.update(item.ref, { status: "live", updatedAt: serverTimestamp() });
-      tx.set(db.doc(`products/${item.id}`), { status: "live", updatedAt: serverTimestamp() }, { merge: true });
-    });
-  }));
-  const dueToEnd = await db.collection("auctions").where("status", "==", "live").where("endsAt", "<=", now).limit(50).get();
-  await Promise.allSettled(dueToEnd.docs.map((item) => finalizeAuction(item.id, "system").catch((error: unknown) => {
-    console.error(`[auction-lifecycle] Could not finalize ${item.id}`, error);
-  })));
+  const [published, live] = await Promise.all([
+    db.collection("auctions").where("status", "==", "published").get(),
+    db.collection("auctions").where("status", "==", "live").get(),
+  ]);
+  const dueToStart = published.docs.filter((item) => millisFromFirestore(item.get("startsAt")) <= Date.now());
+  for (let offset = 0; offset < dueToStart.length; offset += 50) {
+    const batch = dueToStart.slice(offset, offset + 50);
+    await Promise.allSettled(batch.map(async (item) => {
+      await db.runTransaction(async (tx) => {
+        const current = await tx.get(item.ref);
+        if (!current.exists || current.get("status") !== "published") return;
+        if (millisFromFirestore(current.get("startsAt")) > Date.now()) return;
+        tx.update(item.ref, { status: "live", updatedAt: serverTimestamp() });
+        tx.set(db.doc(`products/${item.id}`), { status: "live", updatedAt: serverTimestamp() }, { merge: true });
+      });
+    }));
+  }
+  const dueToEnd = live.docs.filter((item) => millisFromFirestore(item.get("endsAt")) <= Date.now());
+  for (let offset = 0; offset < dueToEnd.length; offset += 50) {
+    const batch = dueToEnd.slice(offset, offset + 50);
+    await Promise.allSettled(batch.map((item) => finalizeAuction(item.id, "system").catch((error: unknown) => {
+      console.error(`[auction-lifecycle] Could not finalize ${item.id}`, error);
+    })));
+  }
 });

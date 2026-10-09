@@ -154,10 +154,6 @@ service cloud.firestore {
     match /paymentReferences/{referenceId} {
       allow read, write: if false;
     }
-    match /{path=**}/payments/{paymentId} {
-      allow read: if admin();
-      allow write: if false;
-    }
     match /rateLimits/{uid} {
       allow read, write: if false;
     }

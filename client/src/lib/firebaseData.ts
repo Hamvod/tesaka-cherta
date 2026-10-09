@@ -1,7 +1,6 @@
 import { getIdTokenResult, type User as FirebaseUser } from "firebase/auth";
 import {
   collection,
-  collectionGroup,
   deleteDoc,
   doc,
   getCountFromServer,
@@ -17,6 +16,7 @@ import {
   where,
   type DocumentData,
   type QueryDocumentSnapshot,
+  type QuerySnapshot,
 } from "firebase/firestore";
 import { firestore } from "./firebase";
 import {
@@ -216,8 +216,11 @@ export async function toggleSavedAuction(uid: string, auction: { auctionId: stri
 }
 
 export async function listPublicAuctions(): Promise<AuctionRecord[]> {
-  const snapshot = await getDocs(query(auctionsCollection, where("status", "in", ["live", "published"]), orderBy("endsAt", "asc"), limit(100)));
-  return snapshot.docs.map(readAuction).filter((auction) => auction.endsAt.getTime() > Date.now());
+  const snapshot = await getDocs(query(auctionsCollection, where("status", "in", ["live", "published"])));
+  return snapshot.docs.map(readAuction)
+    .filter((auction) => auction.endsAt.getTime() > Date.now())
+    .sort((left, right) => left.endsAt.getTime() - right.endsAt.getTime())
+    .slice(0, 100);
 }
 
 export async function getPublicAuction(auctionId: string): Promise<AuctionRecord | null> {
@@ -278,14 +281,14 @@ export async function submitFirestoreBid(_uid: string, auctionId: string, paymen
 }
 
 export async function listUserReports(uid: string): Promise<ReportRecord[]> {
-  const snapshot = await getDocs(query(collection(firestore, "reports"), where("uid", "==", uid), orderBy("createdAt", "desc"), limit(50)));
+  const snapshot = await getDocs(query(collection(firestore, "reports"), where("uid", "==", uid)));
   return snapshot.docs.map((item) => ({ id: item.id, uid, reporterName: "You", reporterEmail: null, category: item.data().category,
     subject: String(item.data().subject ?? "Report"), details: String(item.data().details ?? ""),
     targetType: typeof item.data().targetType === "string" ? item.data().targetType : null,
     targetId: typeof item.data().targetId === "string" ? item.data().targetId : null,
     status: item.data().status ?? "open", adminNotes: null, adminReply: typeof item.data().adminReply === "string" ? item.data().adminReply : null,
     createdAt: toDate(item.data().createdAt),
-  }));
+  })).sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()).slice(0, 50);
 }
 
 export async function submitUserReport(_uid: string, input: { category: ReportRecord["category"]; subject: string; details: string; targetType?: string | null; targetId?: string | null }) {
@@ -302,8 +305,8 @@ export async function listAdminAuctions(): Promise<AuctionRecord[]> {
 }
 
 export async function listOwnerAuctions(uid: string): Promise<AuctionRecord[]> {
-  const snapshot = await getDocs(query(auctionsCollection, where("ownerUid", "==", uid), orderBy("createdAt", "desc"), limit(100)));
-  return snapshot.docs.map(readAuction);
+  const snapshot = await getDocs(query(auctionsCollection, where("ownerUid", "==", uid)));
+  return snapshot.docs.map(readAuction).sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()).slice(0, 100);
 }
 
 export async function createFirestoreAuction(_actorUid: string, input: Omit<AuctionRecord, "id" | "bidCount" | "createdAt" | "status" | "imagePath"> & { description: string; imageDataUrl: string }) {
@@ -374,8 +377,11 @@ export async function reviewFirestoreReport(_actorUid: string, reportId: string,
 }
 
 export async function listAdminPayments(): Promise<PaymentRecord[]> {
-  const snapshot = await getDocs(query(collectionGroup(firestore, "payments"), orderBy("createdAt", "desc"), limit(200)));
-  return snapshot.docs.map((item) => readPaymentRecord(item.id, item.ref.parent.parent?.id ?? String(item.data().uid ?? ""), item.data()));
+  const users = await getDocs(usersCollection);
+  const snapshots = await getUserSubcollectionSnapshots(users.docs, "payments", 200);
+  return snapshots.flatMap((snapshot) => snapshot.docs.map((item) => readPaymentRecord(item.id, item.ref.parent.parent?.id ?? String(item.data().uid ?? ""), item.data())))
+    .sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime())
+    .slice(0, 200);
 }
 
 export async function createManualPaymentRecord(_actorUid: string, input: { uid: string; auctionId: string; providerReference: string; status: "pending" | "paid" }) {
@@ -391,6 +397,18 @@ export async function listAdminOwnerApplications(): Promise<OwnerApplicationReco
     submittedAt: toDate(item.data().submittedAt), reviewNote: typeof item.data().reviewNote === "string" ? item.data().reviewNote : null,
     applicantName: String(users[index]?.data()?.name ?? "Cherta member"), applicantEmail: typeof users[index]?.data()?.email === "string" ? users[index]!.data()!.email : null,
   }));
+}
+
+async function getUserSubcollectionSnapshots(users: readonly QueryDocumentSnapshot<DocumentData>[], subcollectionName: "payments" | "bids", perUserLimit?: number) {
+  const snapshots: QuerySnapshot<DocumentData>[] = [];
+  for (let offset = 0; offset < users.length; offset += 20) {
+    const batch = users.slice(offset, offset + 20);
+    snapshots.push(...await Promise.all(batch.map((user) => {
+      const userRecords = collection(firestore, "users", user.id, subcollectionName);
+      return perUserLimit ? getDocs(query(userRecords, orderBy("createdAt", "desc"), limit(perUserLimit))) : getDocs(userRecords);
+    })));
+  }
+  return snapshots;
 }
 
 export async function reviewOwner(uid: string, decision: "approve" | "reject", note = "") { return reviewOwnerApplicationCall({ uid, decision, note }); }
@@ -430,14 +448,18 @@ export async function listAdminAudit(): Promise<AuditRecord[]> {
 }
 
 export async function getAdminDashboardStats() {
-  const [users, auctions, reports, payments, bids, results, ownerApplications] = await Promise.all([
+  const [users, auctions, reports, results, ownerApplications] = await Promise.all([
     getDocs(usersCollection), getDocs(auctionsCollection), getDocs(collection(firestore, "reports")),
-    getDocs(collectionGroup(firestore, "payments")), getDocs(collectionGroup(firestore, "bids")),
     getDocs(resultsCollection), getDocs(collection(firestore, "ownerApplications")),
   ]);
+  const [paymentSnapshots, bidSnapshots] = await Promise.all([
+    getUserSubcollectionSnapshots(users.docs, "payments"), getUserSubcollectionSnapshots(users.docs, "bids"),
+  ]);
+  const paymentCount = paymentSnapshots.reduce((total, snapshot) => total + snapshot.size, 0);
+  const bidCount = bidSnapshots.reduce((total, snapshot) => total + snapshot.size, 0);
   return { totalUsers: users.size, activeUsers: users.docs.filter((item) => item.data().status !== "suspended").length,
     liveAuctions: auctions.docs.filter((item) => item.data().status === "live").length, completedAuctions: results.size,
-    totalBids: bids.size, paymentOrders: payments.size, winners: results.docs.filter((item) => item.data().resultType === "winner").length,
+    totalBids: bidCount, paymentOrders: paymentCount, winners: results.docs.filter((item) => item.data().resultType === "winner").length,
     openReports: reports.docs.filter((item) => item.data().status === "open").length,
     pendingOwners: ownerApplications.docs.filter((item) => item.data().status === "pending").length,
   };

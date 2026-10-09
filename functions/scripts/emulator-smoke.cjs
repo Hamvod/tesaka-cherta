@@ -47,13 +47,6 @@ async function callFunction(name, idToken, data) {
   return body.result;
 }
 
-async function queryPaymentGroup(idToken) {
-  return fetch(`http://127.0.0.1:8080/v1/projects/${projectId}/databases/(default)/documents:runQuery`, {
-    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${idToken}` },
-    body: JSON.stringify({ structuredQuery: { from: [{ collectionId: "payments", allDescendants: true }], orderBy: [{ field: { fieldPath: "createdAt" }, direction: "DESCENDING" }], limit: 200 } }),
-  });
-}
-
 const testJpeg = `data:image/jpeg;base64,${Buffer.from([
   0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x00, 0x01, 0x00, 0x01,
   0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0xff, 0xd9,
@@ -157,8 +150,9 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   assert.equal((await readDocumentAsUser(proofDocPath, bidders[0].idToken)).status, 403, "Another bidder must not read the private Firestore proof document");
   assert.equal((await readDocumentAsUser(proofDocPath, admin.idToken)).ok, true, "Admin should inspect the private Firestore proof document");
   assert.equal((await deleteDocumentAsUser(proofDocPath, bidders[3].idToken)).status, 403, "Browser writes to private payment proof documents must be denied");
-  assert.equal((await queryPaymentGroup(admin.idToken)).ok, true, "Admin collection-group payment query should be allowed by Firestore Rules");
-  assert.equal((await queryPaymentGroup(bidders[0].idToken)).status, 403, "Non-admin collection-group payment query should be denied");
+  const paymentDocPath = `users/${bidders[3].uid}/payments/${submittedProof.paymentId}`;
+  assert.equal((await readDocumentAsUser(paymentDocPath, admin.idToken)).ok, true, "Admin should read a bidder payment record directly");
+  assert.equal((await readDocumentAsUser(paymentDocPath, bidders[0].idToken)).status, 403, "Other bidders must not read each other's payment records");
   await expectCallableError("placeBid", bidders[3].idToken, { auctionId: proofAuctionId, amount: 1.25, paymentId: submittedProof.paymentId }, "FAILED_PRECONDITION");
   await expectCallableError("reviewPaymentProof", bidders[3].idToken, { uid: bidders[3].uid, paymentId: submittedProof.paymentId, decision: "paid" }, "PERMISSION_DENIED");
   const reviewedProof = await callFunction("reviewPaymentProof", admin.idToken, { uid: bidders[3].uid, paymentId: submittedProof.paymentId, decision: "paid" });
@@ -215,7 +209,7 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
     ok: true, projectId, ownerApplicationAndListing: "approved, image stored in Firestore, reviewed, published, closed for editing, updated, and republished", auctionId, acceptedBids: 3, rejectedUnpaidBid: true,
     duplicateAmount: 8, winner: "Bidder 2", winningAmount: result.winningAmount,
     resultReference: result.referenceCode, resultHash: result.resultHash,
-    callableCorsAllowlist: true, invalidImageRejected: true, publicFirestoreAuctionImageRead: true, draftImagePrivacyAndNoClientWrites: true, privateFirestoreReceiptAccess: true, paymentProofReviewAndUse: true, adminOnlyPaymentCollectionGroupRead: true,
+    callableCorsAllowlist: true, invalidImageRejected: true, publicFirestoreAuctionImageRead: true, draftImagePrivacyAndNoClientWrites: true, privateFirestoreReceiptAccess: true, paymentProofReviewAndUse: true, adminPaymentDocumentAccess: true,
     paymentConsumed: true, winnerRecordAndNotifications: true,
   }, null, 2));
 })().catch((error) => {
