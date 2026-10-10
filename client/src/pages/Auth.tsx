@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { createUserWithEmailAndPassword, getIdTokenResult, sendPasswordResetEmail, signInWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { createUserWithEmailAndPassword, getIdTokenResult, GoogleAuthProvider, sendPasswordResetEmail, signInWithEmailAndPassword, signInWithPopup, updateProfile } from "firebase/auth";
 import { ArrowLeft, ArrowUpRight, CheckCircle2, Globe2, LockKeyhole, ShieldCheck, Sparkles } from "lucide-react";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
@@ -66,6 +66,21 @@ export default function Auth({ mode = "signin" }: { mode?: "signin" | "register"
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    setSubmitting(true);
+    try {
+      const credential = await signInWithPopup(auth, new GoogleAuthProvider());
+      await ensureUserDocument(credential.user);
+      const tokenResult = await getIdTokenResult(credential.user);
+      toast.success("Welcome to Tesaka Cherta");
+      setLocation(tokenResult.claims.admin === true ? "/admin" : "/account");
+    } catch (error) {
+      toast.error(authMessage(error));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <div className="auth-page site-shell">
       <div className="auth-split">
@@ -88,6 +103,10 @@ export default function Auth({ mode = "signin" }: { mode?: "signin" | "register"
               {!isRegister && <button className="auth-reset-link" type="button" onClick={handlePasswordReset}>Forgot password?</button>}
               <button className="firebase-auth-button" type="submit" disabled={submitting || loading}><span className="firebase-auth-symbol">F</span>{submitting ? "Please wait…" : isRegister ? "Create account" : "Sign in with email"}<ArrowUpRight size={16} /></button>
             </form>
+            {!isRegister && <>
+              <div className="auth-divider"><span>or continue with</span></div>
+              <button className="firebase-auth-button auth-google-button" type="button" onClick={() => void handleGoogleSignIn()} disabled={submitting || loading}><span className="firebase-auth-symbol">G</span>{submitting ? "Please wait…" : "Continue with Google"}<ArrowUpRight size={16} /></button>
+            </>}
             <div className="auth-divider"><span>Your account, protected</span></div>
             <div className="auth-benefit-list"><div><CheckCircle2 size={16} /><span><strong>Firebase Authentication</strong><small>Your password is handled securely by Firebase Auth.</small></span></div><div><ShieldCheck size={16} /><span><strong>Your bid history stays private</strong><small>Firestore rules restrict account data to its owner.</small></span></div><div><Globe2 size={16} /><span><strong>Built for local participation</strong><small>Choose English or Amharic after you enter.</small></span></div></div>
             <p className="auth-switch">{isRegister ? "Already have an account?" : "New to Tesaka Cherta?"} <button onClick={() => setLocation(isRegister ? "/signin" : "/register")}>{isRegister ? "Sign in" : "Create an account"}</button></p>
