@@ -5,15 +5,15 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
 async function main() {
   const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
-  const email = (process.env.ADMIN_SEED_EMAIL?.trim() || "mminani093@gmail.com").toLowerCase();
-  const displayName = process.env.ADMIN_DISPLAY_NAME?.trim() || "Homvod";
+  const email = (process.env.ADMIN_SEED_EMAIL?.trim() || "Hamvod@gmail.com").toLowerCase();
+  const displayName = process.env.ADMIN_DISPLAY_NAME?.trim() || "Tesaka Cherta Admin";
   const password = process.env.ADMIN_SEED_PASSWORD;
   if (!credentialsPath || !password) {
     throw new Error("Set GOOGLE_APPLICATION_CREDENTIALS and ADMIN_SEED_PASSWORD before running this script.");
   }
 
   const serviceAccount = JSON.parse(await readFile(credentialsPath, "utf8")) as ServiceAccount & { project_id?: string };
-  const expectedProjectId = process.env.FIREBASE_PROJECT_ID ?? "studio-7668403722-dc933";
+  const expectedProjectId = process.env.FIREBASE_PROJECT_ID ?? "tesaka-cherta";
   if (serviceAccount.project_id !== expectedProjectId) {
     throw new Error(`Service account project mismatch; expected ${expectedProjectId}.`);
   }

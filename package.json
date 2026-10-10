@@ -9,7 +9,6 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
-    "test:e2e": "npx --yes firebase-tools emulators:exec --project demo-tesaka-cherta --only auth,firestore,functions,pubsub \"node scripts/e2e/admin-preview.cjs\"",
     "admin:seed": "tsx scripts/seed-admin.ts"
   },
   "dependencies": {
@@ -67,7 +66,8 @@
     "tailwindcss-animate": "^1.0.7",
     "vaul": "^1.1.2",
     "wouter": "^3.3.5",
-    "zod": "^4.1.12"
+    "zod": "^4.1.12",
+    "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "@builder.io/vite-plugin-jsx-loc": "^0.1.1",
@@ -81,7 +81,6 @@
     "add": "^2.0.6",
     "autoprefixer": "^10.4.20",
     "firebase-admin": "^14.5.0",
-    "playwright": "^1.64.0",
     "pnpm": "^10.15.1",
     "postcss": "^8.4.47",
     "prettier": "^3.6.2",

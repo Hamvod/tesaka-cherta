@@ -1,0 +1,1 @@
+{"routes":[{"path":"/","title":"Tesaka Cherta home"},{"path":"/signin","title":"Sign in"},{"path":"/register","title":"Create account"},{"path":"/account","title":"Account"},{"path":"/admin","title":"Admin"},{"path":"/owner","title":"Owner portal"},{"path":"/winners","title":"Winners"},{"path":"/auction/:auctionId","title":"Auction detail"},{"path":"/404","title":"Not found"}]}

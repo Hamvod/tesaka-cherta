@@ -1,43 +1,46 @@
-import { httpsCallable } from "firebase/functions";
-import { functions } from "./firebase";
+/**
+ * Frontend-only action adapter.
+ *
+ * The deployable backend was intentionally removed from this repository. These
+ * functions keep the existing UI contracts stable for preview mode and record
+ * user actions locally so the app remains usable without a server.
+ *
+ * Secure writes (bids, admin decisions, payments) must be connected to a
+ * trusted Firebase backend before production use. Firebase Auth and Firestore
+ * reads remain available in the browser through firebaseData.ts.
+ */
 
-function callable<Input extends Record<string, unknown>, Output>(name: string) {
-  const invoke = httpsCallable<Input, Output>(functions, name);
-  return async (payload: Input): Promise<Output> => {
-    try {
-      return (await invoke(payload)).data;
-    } catch (error) {
-      const record = error && typeof error === "object" ? error as { code?: unknown; message?: unknown } : null;
-      const code = typeof record?.code === "string" ? record.code.toLowerCase() : "";
-      const message = typeof record?.message === "string" ? record.message.trim() : "";
-      console.error(`[Firebase callable: ${name}]`, error);
-      if (/^(?:functions\/)?internal(?:\[0\])?$/.test(code) || /^internal(?:\[0\])?$/i.test(message)) {
-        const paymentWarning = /payment|bid/i.test(name) ? " Your payment or bid has not been confirmed." : " Please check the latest state before retrying.";
-        throw new Error(`The server returned an unexpected internal error while running ${name}.${paymentWarning} Please retry; if this continues, contact the administrator and mention “${name}”.`);
-      }
-      throw error;
-    }
-  };
+type AnyPayload = Record<string, unknown>;
+type ActionResult = Record<string, unknown>;
+
+const ACTIONS_KEY = "tesaka-cherta-preview-actions";
+
+function remember(name: string, payload: AnyPayload): ActionResult {
+  const id = typeof window !== "undefined" && typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}`;
+  if (typeof window !== "undefined") {
+    const existing = JSON.parse(localStorage.getItem(ACTIONS_KEY) || "[]") as Array<Record<string, unknown>>;
+    existing.push({ id, name, payload, createdAt: new Date().toISOString() });
+    localStorage.setItem(ACTIONS_KEY, JSON.stringify(existing.slice(-100)));
+    window.dispatchEvent(new CustomEvent("cherta:action", { detail: { name, payload } }));
+  }
+  const result: ActionResult = { status: "preview_recorded", ...payload };
+  if (name === "createAuction") result.auctionId = id;
+  if (name === "placeBid") result.bidId = id;
+  if (name === "submitPaymentProof" || name === "recordManualPayment") result.paymentId = id;
+  if (name === "submitSupportReport") result.reportId = id;
+  if (name === "reviewOwnerApplication") result.uid = payload.uid;
+  return result;
+}
+
+function callable<Input extends AnyPayload, Output extends ActionResult>(name: string) {
+  return async (payload: Input): Promise<Output> => remember(name, payload) as Output;
 }
 
 export type CreateAuctionInput = {
-  title: string;
-  category: string;
-  description: string;
-  sellerName: string;
-  imageDataUrl: string;
-  bidFee: number;
-  minBid: number;
-  maxBid: number;
-  maxBidsPerUser: number;
-  startsAtMs: number;
-  endsAtMs: number;
+  title: string; category: string; description: string; sellerName: string; imageDataUrl: string;
+  bidFee: number; minBid: number; maxBid: number; maxBidsPerUser: number; startsAtMs: number; endsAtMs: number;
 };
-
-export type UpdateAuctionInput = Omit<CreateAuctionInput, "imageDataUrl"> & {
-  auctionId: string;
-  imageDataUrl?: string;
-};
+export type UpdateAuctionInput = Omit<CreateAuctionInput, "imageDataUrl"> & { auctionId: string; imageDataUrl?: string };
 
 export const createAuctionCall = callable<CreateAuctionInput, { auctionId: string; status: string }>("createAuction");
 export const updateAuctionCall = callable<UpdateAuctionInput, { auctionId: string; status: string }>("updateAuction");
