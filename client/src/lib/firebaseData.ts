@@ -114,7 +114,7 @@ export type ReportRecord = {
   adminReply: string | null;
   createdAt: Date;
 };
-export type PaymentRecord = { id: string; uid: string; auctionId: string; auctionTitle: string; amount: number; provider: string; providerReference: string; status: "pending" | "paid" | "failed"; used: boolean; createdAt: Date; source: "manual" | "bidder_proof"; hasReceiptImage: boolean; ocrText: string | null; ocrStatusHint: "success_terms" | "failure_terms" | "unclear" | null; verificationNote: string | null };
+export type PaymentRecord = { id: string; uid: string; auctionId: string; auctionTitle: string; amount: number; provider: string; providerReference: string; status: "pending" | "paid" | "failed"; used: boolean; createdAt: Date; source: "manual" | "bidder_proof"; hasReceiptImage: boolean; verificationNote: string | null };
 export type AuditRecord = { id: string; action: string; entityType: string; entityId: string; actorUid: string; createdAt: Date };
 export type NotificationRecord = { id: string; type: string; titleKey: string; bodyKey: string; params: Record<string, string>; createdAt: Date; readAt: Date | null };
 export type DeviceRecord = { id: string; label: string; userAgent: string; firstSeen: Date; lastSeen: Date; current: boolean };
@@ -244,15 +244,12 @@ export async function listPublicResults(): Promise<AuctionResult[]> {
 }
 
 function readPaymentRecord(id: string, uid: string, data: DocumentData): PaymentRecord {
-  const hint = data.ocrStatusHint;
   return {
     id, uid, auctionId: String(data.auctionId ?? ""), auctionTitle: String(data.auctionTitle ?? "Auction"),
     amount: numberValue(data.amount), provider: String(data.provider ?? "manual"), providerReference: String(data.providerReference ?? ""),
     status: data.status === "paid" || data.status === "failed" ? data.status : "pending", used: data.used === true, createdAt: toDate(data.createdAt),
     source: data.source === "bidder_proof" ? "bidder_proof" : "manual",
     hasReceiptImage: data.hasReceiptImage === true,
-    ocrText: typeof data.ocrText === "string" ? data.ocrText : null,
-    ocrStatusHint: hint === "success_terms" || hint === "failure_terms" || hint === "unclear" ? hint : null,
     verificationNote: typeof data.verificationNote === "string" ? data.verificationNote : null,
   };
 }
@@ -267,7 +264,7 @@ export async function listAvailablePayments(uid: string, auctionId: string): Pro
   return records.filter((payment) => payment.auctionId === auctionId && payment.status === "paid" && !payment.used);
 }
 
-export async function submitUserPaymentProof(input: { auctionId: string; provider: string; providerReference?: string; proofImageDataUrl?: string; ocrText?: string }) {
+export async function submitUserPaymentProof(input: { auctionId: string; provider: string; providerReference?: string; proofImageDataUrl?: string }) {
   return submitPaymentProofCall(input);
 }
 

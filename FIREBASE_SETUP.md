@@ -121,11 +121,12 @@ npx --yes firebase-tools emulators:exec \
   --project demo-tesaka-cherta \
   --only auth,firestore,functions,pubsub \
   "npm --prefix functions run test:emulator"
+pnpm test:e2e
 ```
 
 ## Operating limits and security
 
-- **No payment gateway/provider API is connected.** OCR reads visible screenshot text only; it cannot check the provider ledger or detect a forged screenshot. An administrator must independently confirm settlement. A verified payment authorizes one bid only.
+- **No payment gateway/provider API is connected.** Receipt images and transaction references are supporting documents only; an administrator must independently confirm settlement with the provider. A verified payment authorizes one bid only.
 - Keep Firestore rules and Functions deployed together. The app has no custom composite-index manifest. A browser UI is not an authorization boundary; backend validation and deployed rules are.
 - The prior SQL data is not automatically migrated. Existing auctions, bids, payments, and results in PostgreSQL are not copied to Firestore.
 - The Firebase web API key is public project configuration. Never place Admin SDK credentials, service-account JSON, payment-provider secrets, or user passwords in the browser bundle or Git.

@@ -9,13 +9,6 @@ function paymentReferenceRef(reference: string) {
   return db.doc(`paymentReferences/${createHash("sha256").update(normalized).digest("hex")}`);
 }
 
-function paymentOcrHint(ocrText: string): "success_terms" | "failure_terms" | "unclear" {
-  const normalized = ocrText.toLowerCase();
-  if (/\b(failed|failure|declined|reversed|cancelled|canceled|unsuccessful)\b|\bnot\s+(?:successful|completed|paid)\b|(?:አልተሳካም|አልተፈጸመም|ተሰርዟል)/u.test(normalized)) return "failure_terms";
-  if (/\b(successful|success|completed|complete|paid|payment received|transfer successful)\b|(?:ተሳክቷል|ተጠናቋል|ተከፍሏል)/u.test(normalized)) return "success_terms";
-  return "unclear";
-}
-
 export const requestOwnerAccess = onCall(CALLABLE_OPTIONS, async (request) => {
   const caller = await requireUser(request);
   if (caller.token.admin === true || caller.token.owner === true) throw new HttpsError("failed-precondition", "This account already has portal access.");
@@ -115,7 +108,6 @@ export const submitPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {
   const proofImage = request.data.proofImageDataUrl === undefined || request.data.proofImageDataUrl === null
     ? null
     : validateFirestoreJpeg(request.data.proofImageDataUrl, "Receipt image");
-  const ocrText = typeof request.data.ocrText === "string" ? request.data.ocrText.trim().slice(0, 6000) : "";
   if (!providerReference && !proofImage) throw new HttpsError("invalid-argument", "Enter a transaction number or submit a receipt image.");
 
   const profileRef = db.doc(`users/${caller.uid}`);
@@ -124,7 +116,6 @@ export const submitPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {
   const uniqueReference = providerReference ? paymentReferenceRef(providerReference) : null;
   const paymentRef = db.collection(`users/${caller.uid}/payments`).doc();
   const proofImageRef = paymentRef.collection("proofs").doc("receipt");
-  const hint = paymentOcrHint(ocrText);
   const hourBucket = Math.floor(Date.now() / 3_600_000);
   await db.runTransaction(async (tx) => {
     const [profile, auction, rate, duplicate] = await Promise.all([
@@ -143,8 +134,8 @@ export const submitPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {
     if (count > 5) throw new HttpsError("resource-exhausted", "You have reached the payment-proof submission limit. Try again later.");
     tx.create(paymentRef, {
       uid: caller.uid, auctionId, auctionTitle: String(auction.get("title") ?? "Auction"), amount,
-      provider, providerReference, source: "bidder_proof", hasReceiptImage: Boolean(proofImage), ocrText: ocrText || null,
-      ocrStatusHint: hint, status: "pending", used: false, createdAt: serverTimestamp(), submittedBy: caller.uid,
+      provider, providerReference, source: "bidder_proof", hasReceiptImage: Boolean(proofImage),
+      status: "pending", used: false, createdAt: serverTimestamp(), submittedBy: caller.uid,
     });
     if (proofImage) tx.create(proofImageRef, {
       uid: caller.uid, paymentId: paymentRef.id, imageDataUrl: proofImage.dataUrl, contentType: "image/jpeg",
@@ -154,7 +145,7 @@ export const submitPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {
     tx.set(rateRef, { hourBucket, count, updatedAt: serverTimestamp() });
     writeAuditInTransaction(tx, caller.uid, "payment.proof_submitted", "payment", paymentRef.id);
   });
-  return { paymentId: paymentRef.id, status: "pending", ocrStatusHint: hint };
+  return { paymentId: paymentRef.id, status: "pending" };
 });
 
 export const reviewPaymentProof = onCall(CALLABLE_OPTIONS, async (request) => {

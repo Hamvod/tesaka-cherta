@@ -138,13 +138,14 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   });
   const submittedProof = await callFunction("submitPaymentProof", bidders[3].idToken, {
     auctionId: proofAuctionId, provider: "Telebirr", providerReference: `PROOF-${Date.now()}`,
-    proofImageDataUrl: testJpeg, ocrText: "Transfer completed successfully",
+    proofImageDataUrl: testJpeg,
   });
-  assert.equal(submittedProof.status, "pending", "OCR must never automatically verify payment");
-  assert.equal(submittedProof.ocrStatusHint, "success_terms", "OCR should return a non-authoritative success-word hint");
+  assert.equal(submittedProof.status, "pending", "Submitted proof must remain pending until independently reviewed");
   const pendingProofRef = db.doc(`users/${bidders[3].uid}/payments/${submittedProof.paymentId}`);
   assert.equal((await pendingProofRef.get()).get("status"), "pending");
   assert.equal((await pendingProofRef.get()).get("hasReceiptImage"), true, "The payment list record should only contain a receipt flag");
+  assert.equal((await pendingProofRef.get()).get("ocrText"), undefined, "New proof records must not store OCR text");
+  assert.equal((await pendingProofRef.get()).get("ocrStatusHint"), undefined, "New proof records must not store OCR hints");
   const proofDocPath = `users/${bidders[3].uid}/payments/${submittedProof.paymentId}/proofs/receipt`;
   assert.equal((await readDocumentAsUser(proofDocPath, bidders[3].idToken)).ok, true, "Receipt owner should read its private Firestore proof document");
   assert.equal((await readDocumentAsUser(proofDocPath, bidders[0].idToken)).status, 403, "Another bidder must not read the private Firestore proof document");
