@@ -1,0 +1,165 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function userPath(uid) { return /databases/$(database)/documents/users/$(uid); }
+    function activeUser(uid) {
+      return !exists(userPath(uid)) || get(userPath(uid)).data.status != 'suspended';
+    }
+    function admin() {
+      return signedIn() && request.auth.token.admin == true && activeUser(request.auth.uid);
+    }
+    function verifiedOwner(uid) {
+      return signedIn() && request.auth.uid == uid && request.auth.token.owner == true && activeUser(uid);
+    }
+    function ownActive(uid) { return signedIn() && request.auth.uid == uid && activeUser(uid); }
+    function auctionPath(auctionId) { return /databases/$(database)/documents/auctions/$(auctionId); }
+    function publicAuctionStatus(status) { return status in ['published', 'live', 'completed']; }
+
+    match /users/{uid} {
+      allow read: if admin() || (signedIn() && request.auth.uid == uid);
+      allow create: if admin() || (ownActive(uid)
+        && request.resource.data.uid == uid
+        && request.resource.data.role == 'user'
+        && request.resource.data.status == 'active'
+        && request.resource.data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'city', 'language', 'marketingOptIn', 'role', 'status', 'ownerStatus', 'ownerApplicationStatus', 'createdAt', 'updatedAt', 'lastSignedIn']));
+      allow update: if admin()
+        ? request.resource.data.uid == resource.data.uid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.status == resource.data.status
+        : ownActive(uid)
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.role == resource.data.role
+          && request.resource.data.status == resource.data.status
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'email', 'phone', 'city', 'language', 'marketingOptIn', 'updatedAt', 'lastSignedIn'])
+          && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['lastSignedIn']) || request.resource.data.lastSignedIn == request.time);
+      allow delete: if false;
+
+      match /watchlist/{auctionId} {
+        allow read: if admin() || (signedIn() && request.auth.uid == uid);
+        allow create, update: if ownActive(uid)
+          && request.resource.data.auctionId == auctionId
+          && request.resource.data.title is string
+          && request.resource.data.title.size() <= 220
+          && request.resource.data.keys().hasOnly(['auctionId', 'title', 'imagePath', 'endsAt', 'createdAt']);
+        allow delete: if ownActive(uid);
+      }
+
+      match /payments/{paymentId} {
+        allow read: if admin() || (signedIn() && request.auth.uid == uid);
+        allow create, update, delete: if false;
+
+        match /proofs/{proofId} {
+          allow read: if admin() || (ownActive(uid) && proofId == 'receipt');
+          allow create, update, delete: if false;
+        }
+      }
+
+      match /bids/{bidId} {
+        allow read: if admin() || (signedIn() && request.auth.uid == uid);
+        allow create, update, delete: if false;
+      }
+
+      match /wins/{auctionId} {
+        allow read: if admin() || (signedIn() && request.auth.uid == uid);
+        allow write: if false;
+      }
+
+      match /notifications/{notificationId} {
+        allow read: if admin() || (signedIn() && request.auth.uid == uid);
+        allow update: if ownActive(uid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
+          && request.resource.data.readAt == request.time;
+        allow create, delete: if false;
+      }
+
+      match /devices/{deviceId} {
+        allow read: if admin() || (signedIn() && request.auth.uid == uid);
+        allow create: if ownActive(uid)
+          && request.resource.data.keys().hasOnly(['label', 'userAgent', 'current', 'firstSeen', 'lastSeen'])
+          && request.resource.data.label is string && request.resource.data.label.size() <= 80
+          && request.resource.data.userAgent is string && request.resource.data.userAgent.size() <= 500
+          && request.resource.data.current is bool
+          && request.resource.data.lastSeen == request.time
+          && request.resource.data.firstSeen == request.time;
+        allow update: if ownActive(uid)
+          && request.resource.data.keys().hasOnly(['label', 'userAgent', 'current', 'firstSeen', 'lastSeen'])
+          && request.resource.data.label is string && request.resource.data.label.size() <= 80
+          && request.resource.data.userAgent is string && request.resource.data.userAgent.size() <= 500
+          && request.resource.data.current is bool
+          && request.resource.data.lastSeen == request.time
+          && request.resource.data.firstSeen == resource.data.firstSeen
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['label', 'userAgent', 'current', 'lastSeen']);
+        allow delete: if ownActive(uid);
+      }
+    }
+
+    match /ownerApplications/{uid} {
+      allow read: if admin() || (signedIn() && request.auth.uid == uid);
+      allow create, update, delete: if false;
+    }
+
+    match /products/{productId} {
+      allow read: if admin() || (signedIn() && resource.data.ownerUid == request.auth.uid && activeUser(request.auth.uid)) || publicAuctionStatus(resource.data.status);
+      allow create, update, delete: if false;
+    }
+
+    match /auctions/{auctionId} {
+      allow read: if admin()
+        || (signedIn() && resource.data.ownerUid == request.auth.uid && activeUser(request.auth.uid))
+        || publicAuctionStatus(resource.data.status);
+      allow create, update, delete: if false;
+
+      match /entries/{bidId} {
+        allow read: if admin();
+        allow create, update, delete: if false;
+      }
+      match /bidderCounters/{uid} {
+        allow read: if admin();
+        allow create, update, delete: if false;
+      }
+      match /amountCounts/{amountCents} {
+        allow read: if admin();
+        allow create, update, delete: if false;
+      }
+    }
+
+    match /auctionImages/{auctionId} {
+      allow get: if admin() || (exists(auctionPath(auctionId))
+        && (publicAuctionStatus(get(auctionPath(auctionId)).data.status)
+          || (signedIn() && activeUser(request.auth.uid) && get(auctionPath(auctionId)).data.ownerUid == request.auth.uid)));
+      allow list: if admin();
+      allow create, update, delete: if false;
+    }
+
+    match /results/{auctionId} {
+      allow read: if true;
+      allow create, update, delete: if false;
+    }
+
+    match /reports/{reportId} {
+      allow read: if admin() || (signedIn() && resource.data.uid == request.auth.uid && activeUser(request.auth.uid));
+      allow create, update, delete: if false;
+      match /private/{documentId} {
+        allow read: if admin();
+        allow write: if false;
+      }
+    }
+
+    match /auditLogs/{eventId} {
+      allow read: if admin();
+      allow create, update, delete: if false;
+    }
+
+    match /paymentReferences/{referenceId} {
+      allow read, write: if false;
+    }
+    match /rateLimits/{uid} {
+      allow read, write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

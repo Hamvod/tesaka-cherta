@@ -115,3 +115,5 @@ client/public/__manus__/version.json
 serviceAccountKey.json
 firebase-adminsdk-*.json
 .admin-seed.env
+
+functions/lib/

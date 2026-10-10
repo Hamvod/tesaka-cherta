@@ -61,14 +61,17 @@ export function useAuth(options?: UseAuthOptions) {
         console.error("[Firestore] Could not initialize the user profile", profileError);
       });
       stopProfile = onSnapshot(doc(firestore, "users", nextUser.uid), (profile) => {
-        if (active && currentGeneration === generation) setIsSuspended(profile.data()?.status === "suspended");
+        if (active && currentGeneration === generation) {
+          setIsSuspended(profile.data()?.status === "suspended");
+          if (profile.data()?.role === "owner") setIsOwner(true);
+        }
       }, (profileError) => {
         console.error("[Firestore] Could not read account status", profileError);
       });
       void getIdTokenResult(nextUser).then((tokenResult) => {
         if (!active || currentGeneration !== generation) return;
         setIsAdmin(tokenResult.claims.admin === true);
-        setIsOwner(tokenResult.claims.owner === true);
+        if (tokenResult.claims.owner === true) setIsOwner(true);
         setError(null);
       }).catch((authError: unknown) => {
         if (!active || currentGeneration !== generation) return;

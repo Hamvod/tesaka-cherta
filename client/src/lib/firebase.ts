@@ -2,6 +2,7 @@ import { getApp, getApps, initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
 import { connectAuthEmulator, getAuth } from "firebase/auth";
 import { connectFirestoreEmulator, getFirestore } from "firebase/firestore";
+import { connectFunctionsEmulator, getFunctions } from "firebase/functions";
 
 // This web configuration is public Firebase project configuration. Protect
 // data with Firebase Auth and Firestore rules; never put Admin SDK credentials here.
@@ -24,9 +25,11 @@ export const firebaseApp = getApps().length ? getApp() : initializeApp(activeFir
 export const analytics = typeof window !== "undefined" ? getAnalytics(firebaseApp) : null;
 export const auth = getAuth(firebaseApp);
 export const firestore = getFirestore(firebaseApp);
+export const functions = getFunctions(firebaseApp, "us-central1");
 export const FIREBASE_PROJECT_ID = activeFirebaseConfig.projectId;
 
 if (useEmulators) {
   connectAuthEmulator(auth, "http://127.0.0.1:9099", { disableWarnings: true });
   connectFirestoreEmulator(firestore, "127.0.0.1", 8080);
+  connectFunctionsEmulator(functions, "127.0.0.1", 5001);
 }

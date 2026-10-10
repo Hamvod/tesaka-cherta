@@ -1,29 +1,26 @@
 # Tesaka Cherta
 
-Tesaka Cherta is a static React/Vite frontend for a transparent lowest-unique-bid marketplace. The UI, authentication screens, marketplace routes, account area, owner portal, admin area, and winners gallery live under `client/src`.
+Tesaka Cherta is a React/Vite auction marketplace with Firebase Authentication, Cloud Firestore, and Firebase Cloud Functions. The frontend is deployed to Vercel; trusted auction, account, payment-review, moderation, and lifecycle operations run through Firebase Functions.
+
+## Firestore-only data architecture
+
+This project deliberately does **not** use Firebase Storage or any Storage SDK. Product images and payment proof images are compressed in the browser and stored in Firestore documents under the existing image collections. The Firebase web config includes the standard public `storageBucket` field, but no Storage API is imported or called.
+
+This project also deliberately ships **no custom Firestore index file** and does not add composite indexes. Existing queries are designed around Firestore's built-in indexes.
 
 ## Run locally
 
 ```bash
 pnpm install
+npm --prefix functions install
 pnpm dev
 ```
 
-## Firebase: Firestore only
+For the full Firebase emulator workflow, run the Firebase emulators for Auth, Firestore, Functions, and Pub/Sub with the supplied `firebase.json` ports.
 
-The browser uses the `tesaka-cherta` Firebase web configuration in `client/src/lib/firebase.ts` for Authentication, **Cloud Firestore**, and Analytics. This project deliberately does **not** use Firebase Storage or any Storage SDK. Product and receipt image data is kept in Firestore by the existing browser-side compression helpers.
+## Firebase configuration
 
-This project also deliberately ships **no custom Firestore index file** and does not add composite indexes. Queries use Firestore's built-in single-field indexes; any future query requiring an index should be redesigned rather than adding an index deployment file.
-
-The Firebase web API key is intentionally public configuration. Admin SDK credentials must never be committed.
-
-## Realtime
-
-`client/src/lib/realtime.ts` provides an optional Socket.IO client. Set `VITE_SOCKET_URL` to connect to a compatible realtime service and emit `auction:updated` or `results:updated`. With no socket URL, the app remains functional as a static frontend and uses Firebase/Firestore data plus local preview events.
-
-## Frontend-only actions
-
-The former deployable Cloud Functions backend has been removed. Existing UI action contracts are isolated in `client/src/lib/cloudFunctions.ts`, where preview actions are recorded in local storage. Connect those contracts to a trusted backend before enabling production writes for bids, payments, moderation, or admin decisions.
+The browser configuration in `client/src/lib/firebase.ts` targets the `tesaka-cherta` Firebase project and initializes Auth, Firestore, Functions in `us-central1`, and Analytics. Add the Vercel deployment domains to Firebase Authentication's authorized domains.
 
 ## Seed the admin account
 
@@ -38,14 +35,21 @@ ADMIN_DISPLAY_NAME='Tesaka Cherta Admin' \
 pnpm admin:seed
 ```
 
-The requested seed email is `Hamvod@gmail.com`. For safety, the password is supplied at runtime and is not stored in this repository.
+The requested admin email is `Hamvod@gmail.com`. The seed utility sets the Firebase Auth password and `admin: true` custom claim, then creates the matching Firestore profile.
 
-## Build
+## Build and validate
 
 ```bash
 pnpm check
 pnpm test
 pnpm build
+npm --prefix functions run build
 ```
 
-Vercel uses `vercel.json` to build the static output from `dist/public` and route SPA paths back to `index.html`.
+## Deployment
+
+Vercel builds the frontend from `dist/public` using `vercel.json`. Firebase Functions and Firestore rules are deployed separately from the trusted project environment:
+
+```bash
+npx firebase-tools deploy --only functions,firestore:rules --project tesaka-cherta
+```
