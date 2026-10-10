@@ -13,32 +13,23 @@ import {
   setDoc,
   Timestamp,
   updateDoc,
+  writeBatch,
   where,
   type DocumentData,
   type QueryDocumentSnapshot,
   type QuerySnapshot,
 } from "firebase/firestore";
 import { firestore } from "./firebase";
+import { calculateLowestUniqueBid } from "./auctionEngine";
 import {
-  createAuctionCall,
-  closeAuctionForEditingCall,
-  deleteAuctionCall,
-  finalizeAuctionCall,
-  placeBidCall,
-  publishAuctionCall,
   recordManualPaymentCall,
   requestOwnerAccessCall,
   reviewPaymentProofCall,
-  reviewAuctionCall,
   reviewOwnerApplicationCall,
   reviewReportCall,
   setUserStatusCall,
-  submitAuctionForReviewCall,
   submitPaymentProofCall,
   submitSupportReportCall,
-  type CreateAuctionInput,
-  updateAuctionCall,
-  type UpdateAuctionInput,
 } from "./cloudFunctions";
 
 export type AccountProfile = { phone: string | null; city: string | null; language: "en" | "am"; marketingOptIn: boolean };
@@ -275,7 +266,23 @@ export async function reviewUserPaymentProof(input: { uid: string; paymentId: st
 export async function submitFirestoreBid(_uid: string, auctionId: string, paymentId: string, rawAmount: string) {
   const amount = Number(rawAmount);
   if (!Number.isFinite(amount) || amount <= 0) throw new Error("Enter a valid bid amount.");
-  return placeBidCall({ auctionId, amount, ...(paymentId ? { paymentId } : {}) });
+  const auctionRef = doc(auctionsCollection, auctionId);
+  const auctionSnapshot = await getDoc(auctionRef);
+  if (!auctionSnapshot.exists()) throw new Error("Auction not found.");
+  const auction = readAuction(auctionSnapshot as QueryDocumentSnapshot<DocumentData>);
+  if (auction.status !== "live" || auction.endsAt.getTime() <= Date.now()) throw new Error("This auction is not accepting bids.");
+  if (amount < auction.minBid || amount > auction.maxBid) throw new Error(`Bid must be between ${auction.minBid.toFixed(2)} and ${auction.maxBid.toFixed(2)} ETB.`);
+  const existingBids = await getDocs(query(collection(firestore, "auctions", auctionId, "entries"), where("uid", "==", _uid), limit(auction.maxBidsPerUser)));
+  if (existingBids.size >= auction.maxBidsPerUser) throw new Error(`You can submit up to ${auction.maxBidsPerUser} bids for this auction.`);
+  const bidRef = doc(collection(firestore, "auctions", auctionId, "entries"));
+  const userBidRef = doc(userCollection(_uid, "bids"), bidRef.id);
+  const batch = writeBatch(firestore);
+  const stamp = serverTimestamp();
+  batch.set(bidRef, { uid: _uid, amount, paymentId: paymentId || null, createdAt: stamp });
+  batch.set(userBidRef, { auctionId, amount, paymentId: paymentId || null, auctionTitle: auction.title, auctionImagePath: auction.imagePath, auctionStatus: auction.status, isWinningBid: false, createdAt: stamp });
+  batch.update(auctionRef, { bidCount: (auction.bidCount ?? 0) + 1, updatedAt: stamp });
+  await batch.commit();
+  return { bidId: bidRef.id, amount };
 }
 
 export async function listUserReports(uid: string): Promise<ReportRecord[]> {
@@ -308,34 +315,72 @@ export async function listOwnerAuctions(uid: string): Promise<AuctionRecord[]> {
 }
 
 export async function createFirestoreAuction(_actorUid: string, input: Omit<AuctionRecord, "id" | "bidCount" | "createdAt" | "status" | "imagePath"> & { description: string; imageDataUrl: string }) {
-  const request: CreateAuctionInput = {
-    title: input.title, category: input.category, description: input.description, sellerName: input.sellerName,
-    imageDataUrl: input.imageDataUrl, bidFee: input.bidFee,
-    minBid: input.minBid, maxBid: input.maxBid, maxBidsPerUser: input.maxBidsPerUser,
-    startsAtMs: input.startsAt.getTime(), endsAtMs: input.endsAt.getTime(),
-  };
-  return createAuctionCall(request);
+  const auctionRef = doc(auctionsCollection);
+  const productRef = doc(firestore, "products", auctionRef.id);
+  const imageRef = doc(firestore, "auctionImages", auctionRef.id);
+  const stamp = serverTimestamp();
+  const imagePath = `firestore-image:${auctionRef.id}`;
+  const batch = writeBatch(firestore);
+  batch.set(imageRef, { auctionId: auctionRef.id, ownerUid: _actorUid, imageDataUrl: input.imageDataUrl, contentType: "image/jpeg", createdAt: stamp, updatedAt: stamp });
+  batch.set(productRef, { productId: productRef.id, ownerUid: _actorUid, title: input.title, category: input.category, description: input.description, imagePath, sellerName: input.sellerName, status: "draft", createdAt: stamp, updatedAt: stamp });
+  batch.set(auctionRef, { productId: productRef.id, ownerUid: _actorUid, title: input.title, category: input.category, description: input.description, imagePath, sellerName: input.sellerName, bidFee: input.bidFee, minBid: input.minBid, maxBid: input.maxBid, maxBidsPerUser: input.maxBidsPerUser, startsAt: Timestamp.fromDate(input.startsAt), endsAt: Timestamp.fromDate(input.endsAt), status: "draft", bidCount: 0, createdAt: stamp, updatedAt: stamp });
+  await batch.commit();
+  return { auctionId: auctionRef.id, status: "draft" };
 }
 
 export async function updateFirestoreAuction(_actorUid: string, auctionId: string, input: Omit<AuctionRecord, "id" | "bidCount" | "createdAt" | "status" | "imagePath"> & { description: string; imageDataUrl?: string }) {
-  const request: UpdateAuctionInput = {
-    auctionId, title: input.title, category: input.category, description: input.description, sellerName: input.sellerName,
-    bidFee: input.bidFee, minBid: input.minBid, maxBid: input.maxBid, maxBidsPerUser: input.maxBidsPerUser,
-    startsAtMs: input.startsAt.getTime(), endsAtMs: input.endsAt.getTime(),
-    ...(input.imageDataUrl ? { imageDataUrl: input.imageDataUrl } : {}),
-  };
-  return updateAuctionCall(request);
+  const auctionRef = doc(auctionsCollection, auctionId);
+  const current = await getDoc(auctionRef);
+  if (!current.exists()) throw new Error("Auction not found.");
+  const stamp = serverTimestamp();
+  const batch = writeBatch(firestore);
+  batch.update(auctionRef, { title: input.title, category: input.category, description: input.description, sellerName: input.sellerName, bidFee: input.bidFee, minBid: input.minBid, maxBid: input.maxBid, maxBidsPerUser: input.maxBidsPerUser, startsAt: Timestamp.fromDate(input.startsAt), endsAt: Timestamp.fromDate(input.endsAt), updatedAt: stamp, status: "draft" });
+  batch.set(doc(firestore, "products", auctionId), { title: input.title, category: input.category, description: input.description, sellerName: input.sellerName, bidFee: input.bidFee, minBid: input.minBid, maxBid: input.maxBid, maxBidsPerUser: input.maxBidsPerUser, startsAt: Timestamp.fromDate(input.startsAt), endsAt: Timestamp.fromDate(input.endsAt), status: "draft", updatedAt: stamp }, { merge: true });
+  if (input.imageDataUrl) batch.set(doc(firestore, "auctionImages", auctionId), { auctionId, ownerUid: _actorUid, imageDataUrl: input.imageDataUrl, contentType: "image/jpeg", updatedAt: stamp }, { merge: true });
+  await batch.commit();
+  return { auctionId, status: "draft" };
 }
 
 export async function deleteFirestoreAuction(_actorUid: string, auctionId: string) {
-  return deleteAuctionCall({ auctionId });
+  const batch = writeBatch(firestore);
+  batch.delete(doc(auctionsCollection, auctionId));
+  batch.delete(doc(firestore, "products", auctionId));
+  batch.delete(doc(firestore, "auctionImages", auctionId));
+  await batch.commit();
+  return { auctionId, status: "deleted" };
 }
 
-export async function submitAuctionReview(_actorUid: string, auctionId: string) { return submitAuctionForReviewCall({ auctionId }); }
-export async function reviewAuctionListing(auctionId: string, decision: "approve" | "reject", note = "") { return reviewAuctionCall({ auctionId, decision, note }); }
-export async function publishFirestoreAuction(_actorUid: string, auctionId: string) { return publishAuctionCall({ auctionId }); }
-export async function closeAuctionForEditing(_actorUid: string, auctionId: string) { return closeAuctionForEditingCall({ auctionId }); }
-export async function closeFirestoreAuction(_actorUid: string, auctionId: string) { return finalizeAuctionCall({ auctionId }); }
+async function setAuctionStatus(auctionId: string, status: AuctionStatus, note?: string) {
+  const stamp = serverTimestamp();
+  const batch = writeBatch(firestore);
+  batch.update(doc(auctionsCollection, auctionId), { status, ...(note ? { reviewNote: note } : {}), updatedAt: stamp });
+  batch.set(doc(firestore, "products", auctionId), { status, ...(note ? { reviewNote: note } : {}), updatedAt: stamp }, { merge: true });
+  await batch.commit();
+  return { auctionId, status };
+}
+export async function submitAuctionReview(_actorUid: string, auctionId: string) { return setAuctionStatus(auctionId, "pending_review"); }
+export async function reviewAuctionListing(auctionId: string, decision: "approve" | "reject", note = "") { return setAuctionStatus(auctionId, decision === "approve" ? "published" : "rejected", note); }
+export async function publishFirestoreAuction(_actorUid: string, auctionId: string) {
+  const auction = await getPublicAuction(auctionId) ?? (await getDoc(doc(auctionsCollection, auctionId))).data();
+  const startsAt = auction?.startsAt instanceof Timestamp ? auction.startsAt.toDate() : new Date(auction?.startsAt ?? Date.now());
+  return setAuctionStatus(auctionId, startsAt.getTime() <= Date.now() ? "live" : "published");
+}
+export async function closeAuctionForEditing(_actorUid: string, auctionId: string) { return setAuctionStatus(auctionId, "closed"); }
+export async function closeFirestoreAuction(_actorUid: string, auctionId: string) {
+  const entries = await getDocs(collection(firestore, "auctions", auctionId, "entries"));
+  const winner = calculateLowestUniqueBid(entries.docs.map((entry) => ({ id: entry.id, amount: numberValue(entry.data().amount) })));
+  const auctionSnapshot = await getDoc(doc(auctionsCollection, auctionId));
+  if (!auctionSnapshot.exists()) throw new Error("Auction not found.");
+  const auction = readAuction(auctionSnapshot as QueryDocumentSnapshot<DocumentData>);
+  const resultRef = doc(resultsCollection, auctionId);
+  const resultType = winner ? "winner" : "no_unique_bid";
+  const referenceCode = `LOCAL-${auctionId.slice(0, 8).toUpperCase()}`;
+  const batch = writeBatch(firestore);
+  batch.set(resultRef, { auctionId, title: auction.title, category: auction.category, imagePath: auction.imagePath, resultType, winningAmount: winner?.amount ?? null, winnerName: winner ? "Winner" : "No winner", validBidCount: entries.size, referenceCode, publishedAt: serverTimestamp() });
+  batch.update(doc(auctionsCollection, auctionId), { status: "completed", updatedAt: serverTimestamp() });
+  await batch.commit();
+  return { resultType, referenceCode, winningAmount: winner?.amount ?? null, validBidCount: entries.size };
+}
 
 export async function listAdminUsers(): Promise<UserRecord[]> {
   const snapshot = await getDocs(query(usersCollection, limit(500)));
