@@ -133,16 +133,23 @@ const asAuctionStatus = (value: unknown): AuctionStatus => {
   const allowed: AuctionStatus[] = ["draft", "pending_review", "rejected", "published", "live", "calculating", "completed", "closed"];
   return allowed.includes(value as AuctionStatus) ? value as AuctionStatus : "draft";
 };
+const effectiveAuctionStatus = (value: unknown, startsAt: Date, endsAt: Date): AuctionStatus => {
+  const status = asAuctionStatus(value);
+  if (status === "published" && startsAt.getTime() <= Date.now() && endsAt.getTime() > Date.now()) return "live";
+  return status;
+};
 const readAuction = (snapshot: QueryDocumentSnapshot<DocumentData>): AuctionRecord => {
   const data = snapshot.data();
+  const startsAt = toDate(data.startsAt);
+  const endsAt = toDate(data.endsAt);
   return {
     id: snapshot.id, title: String(data.title ?? "Auction"), description: typeof data.description === "string" ? data.description : "",
     category: String(data.category ?? "Other"), imagePath: String(data.imagePath ?? ""),
     productId: String(data.productId ?? snapshot.id), ownerUid: typeof data.ownerUid === "string" ? data.ownerUid : undefined,
     ownerName: typeof data.ownerName === "string" ? data.ownerName : undefined, sellerName: String(data.sellerName ?? "Tesaka Cherta"),
     bidFee: numberValue(data.bidFee), minBid: numberValue(data.minBid, 0.1), maxBid: numberValue(data.maxBid, 100),
-    maxBidsPerUser: numberValue(data.maxBidsPerUser, 10), startsAt: toDate(data.startsAt), endsAt: toDate(data.endsAt),
-    status: asAuctionStatus(data.status), bidCount: numberValue(data.bidCount), createdAt: toDate(data.createdAt),
+    maxBidsPerUser: numberValue(data.maxBidsPerUser, 10), startsAt, endsAt,
+    status: effectiveAuctionStatus(data.status, startsAt, endsAt), bidCount: numberValue(data.bidCount), createdAt: toDate(data.createdAt),
   };
 };
 const readNotification = (item: QueryDocumentSnapshot<DocumentData>): NotificationRecord => ({

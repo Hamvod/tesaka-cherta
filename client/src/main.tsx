@@ -6,7 +6,7 @@ import { connectRealtime } from "./lib/realtime";
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { staleTime: 15_000, retry: 1, refetchOnWindowFocus: true },
+    queries: { staleTime: 15_000, retry: 1, refetchOnWindowFocus: true, refetchInterval: 15_000, refetchIntervalInBackground: true },
   },
 });
 

@@ -113,12 +113,18 @@ service cloud.firestore {
         || (signedIn() && resource.data.ownerUid == request.auth.uid && activeUser(request.auth.uid))
         || publicAuctionStatus(resource.data.status);
       allow create: if admin() || (signedIn() && request.resource.data.ownerUid == request.auth.uid && activeUser(request.auth.uid));
-      allow update: if admin() || (signedIn() && resource.data.ownerUid == request.auth.uid && request.resource.data.ownerUid == resource.data.ownerUid && activeUser(request.auth.uid));
+      allow update: if admin() || (signedIn() && resource.data.ownerUid == request.auth.uid && request.resource.data.ownerUid == resource.data.ownerUid && activeUser(request.auth.uid))
+        || (signedIn() && activeUser(request.auth.uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bidCount', 'updatedAt'])
+          && request.resource.data.bidCount == resource.data.bidCount + 1 && request.resource.data.updatedAt == request.time);
       allow delete: if admin() || (signedIn() && resource.data.ownerUid == request.auth.uid && activeUser(request.auth.uid));
 
       match /entries/{bidId} {
         allow read: if admin() || (signedIn() && activeUser(request.auth.uid));
-        allow create: if signedIn() && activeUser(request.auth.uid) && get(auctionPath(auctionId)).data.status == 'live' && request.resource.data.uid == request.auth.uid;
+        allow create: if signedIn() && activeUser(request.auth.uid) && request.resource.data.uid == request.auth.uid
+          && ((get(auctionPath(auctionId)).data.status == 'live')
+            || (get(auctionPath(auctionId)).data.status == 'published'
+              && get(auctionPath(auctionId)).data.startsAt <= request.time
+              && get(auctionPath(auctionId)).data.endsAt > request.time));
         allow update, delete: if admin() || (signedIn() && request.resource.data.uid == request.auth.uid && activeUser(request.auth.uid));
       }
       match /bidderCounters/{uid} {
