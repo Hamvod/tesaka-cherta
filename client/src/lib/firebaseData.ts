@@ -9,6 +9,7 @@ import {
   limit,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   Timestamp,
@@ -19,18 +20,8 @@ import {
   type QueryDocumentSnapshot,
   type QuerySnapshot,
 } from "firebase/firestore";
-import { firestore } from "./firebase";
+import { auth, firestore } from "./firebase";
 import { calculateLowestUniqueBid } from "./auctionEngine";
-import {
-  recordManualPaymentCall,
-  requestOwnerAccessCall,
-  reviewPaymentProofCall,
-  reviewOwnerApplicationCall,
-  reviewReportCall,
-  setUserStatusCall,
-  submitPaymentProofCall,
-  submitSupportReportCall,
-} from "./cloudFunctions";
 
 export type AccountProfile = { phone: string | null; city: string | null; language: "en" | "am"; marketingOptIn: boolean };
 export type SavedAuction = { id: string; auctionId: string; title: string; imagePath: string; endsAt: Date };
@@ -128,6 +119,21 @@ const toDate = (value: unknown, fallback = new Date()): Date => {
 const numberValue = (value: unknown, fallback = 0): number => {
   const parsed = value == null ? fallback : typeof value === "number" ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+};
+const cleanText = (value: unknown, label: string, min: number, max: number): string => {
+  const result = typeof value === "string" ? value.trim() : "";
+  if (result.length < min || result.length > max) throw new Error(`${label} must be between ${min} and ${max} characters.`);
+  return result;
+};
+const hashReference = async (reference: string): Promise<string> => {
+  const normalized = reference.trim().replace(/\s+/g, "").toLowerCase();
+  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalized));
+  return Array.from(new Uint8Array(bytes)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+const getCurrentUid = (): string => {
+  const uid = auth.currentUser?.uid;
+  if (!uid) throw new Error("Sign in to continue.");
+  return uid;
 };
 const asAuctionStatus = (value: unknown): AuctionStatus => {
   const allowed: AuctionStatus[] = ["draft", "pending_review", "rejected", "published", "live", "calculating", "completed", "closed"];
@@ -263,11 +269,52 @@ export async function listAvailablePayments(uid: string, auctionId: string): Pro
 }
 
 export async function submitUserPaymentProof(input: { auctionId: string; provider: string; providerReference?: string; proofImageDataUrl?: string }) {
-  return submitPaymentProofCall(input);
+  const provider = cleanText(input.provider, "Payment provider", 2, 80);
+  const providerReference = input.providerReference?.trim() ?? "";
+  if (providerReference && (providerReference.length < 3 || providerReference.length > 160)) throw new Error("Transaction number must be between 3 and 160 characters.");
+  const proofImageDataUrl = input.proofImageDataUrl ?? null;
+  if (!providerReference && !proofImageDataUrl) throw new Error("Enter a transaction number or attach a receipt image.");
+  if (proofImageDataUrl && (!proofImageDataUrl.startsWith("data:image/jpeg;base64,") || proofImageDataUrl.length > 420_000)) throw new Error("Receipt image is invalid or too large.");
+  const auctionRef = doc(auctionsCollection, input.auctionId);
+  const paymentRef = doc(collection(firestore, "users", getCurrentUid(), "payments"));
+  const proofRef = doc(firestore, "users", getCurrentUid(), "payments", paymentRef.id, "proofs", "receipt");
+  const referenceId = providerReference ? await hashReference(providerReference) : null;
+  const referenceRef = referenceId ? doc(firestore, "paymentReferences", referenceId) : null;
+  const profileRef = userDocument(getCurrentUid());
+  await runTransaction(firestore, async (transaction) => {
+    const [profile, auction, duplicate] = await Promise.all([
+      transaction.get(profileRef), transaction.get(auctionRef), referenceRef ? transaction.get(referenceRef) : Promise.resolve(null),
+    ]);
+    if (!profile.exists() || profile.data()?.status === "suspended") throw new Error("This account cannot submit payment proof.");
+    if (!auction.exists()) throw new Error("Auction not found.");
+    const data = auction.data();
+    const endsAt = toDate(data.endsAt);
+    if (!["published", "live"].includes(String(data.status)) || endsAt.getTime() <= Date.now()) throw new Error("Payment proof can only be submitted for an open auction.");
+    if (numberValue(data.bidFee) <= 0) throw new Error("This auction does not require a payment fee.");
+    if (duplicate?.exists()) throw new Error("That transaction number has already been submitted.");
+    const stamp = serverTimestamp();
+    transaction.set(paymentRef, { uid: getCurrentUid(), auctionId: input.auctionId, auctionTitle: String(data.title ?? "Auction"), amount: numberValue(data.bidFee), provider, providerReference, source: "bidder_proof", hasReceiptImage: Boolean(proofImageDataUrl), status: "pending", used: false, createdAt: stamp });
+    if (proofImageDataUrl) transaction.set(proofRef, { uid: getCurrentUid(), paymentId: paymentRef.id, imageDataUrl: proofImageDataUrl, contentType: "image/jpeg", createdAt: stamp });
+    if (referenceRef) transaction.set(referenceRef, { uid: getCurrentUid(), auctionId: input.auctionId, paymentId: paymentRef.id, createdAt: stamp });
+  });
+  return { paymentId: paymentRef.id, status: "pending" as const };
 }
 
 export async function reviewUserPaymentProof(input: { uid: string; paymentId: string; decision: "paid" | "failed"; note?: string }) {
-  return reviewPaymentProofCall(input);
+  if (input.decision !== "paid" && input.decision !== "failed") throw new Error("Choose paid or failed.");
+  const paymentRef = doc(firestore, "users", input.uid, "payments", input.paymentId);
+  const payment = await getDoc(paymentRef);
+  if (!payment.exists() || payment.data()?.source !== "bidder_proof") throw new Error("Submitted payment proof not found.");
+  if (payment.data()?.status !== "pending" || payment.data()?.used === true) throw new Error("This payment proof is no longer pending review.");
+  if (input.decision === "paid") {
+    const auction = await getDoc(doc(auctionsCollection, String(payment.data()?.auctionId ?? "")));
+    if (!auction.exists() || !["published", "live"].includes(String(auction.data()?.status)) || toDate(auction.data()?.endsAt).getTime() <= Date.now()) throw new Error("The auction is no longer open.");
+    if (numberValue(auction.data()?.bidFee) !== numberValue(payment.data()?.amount)) throw new Error("The payment amount no longer matches the auction fee.");
+  }
+  const note = input.note?.trim().slice(0, 500) ?? "";
+  await updateDoc(paymentRef, { status: input.decision, reviewedBy: getCurrentUid(), reviewedAt: serverTimestamp(), verificationNote: note || null, ...(input.decision === "paid" ? { verifiedBy: getCurrentUid(), verifiedAt: serverTimestamp() } : {}) });
+  await setDoc(doc(firestore, "users", input.uid, "notifications", `payment-review-${input.paymentId}`), { type: "payment_review", titleKey: input.decision === "paid" ? "notice.paymentApproved.title" : "notice.paymentRejected.title", bodyKey: input.decision === "paid" ? "notice.paymentApproved.body" : "notice.paymentRejected.body", params: { auction: String(payment.data()?.auctionTitle ?? "Auction"), note }, createdAt: serverTimestamp(), readAt: null });
+  return { uid: input.uid, paymentId: input.paymentId, status: input.decision };
 }
 
 export async function submitFirestoreBid(_uid: string, auctionId: string, paymentId: string, rawAmount: string) {
@@ -279,6 +326,11 @@ export async function submitFirestoreBid(_uid: string, auctionId: string, paymen
   const auction = readAuction(auctionSnapshot as QueryDocumentSnapshot<DocumentData>);
   if (auction.status !== "live" || auction.endsAt.getTime() <= Date.now()) throw new Error("This auction is not accepting bids.");
   if (amount < auction.minBid || amount > auction.maxBid) throw new Error(`Bid must be between ${auction.minBid.toFixed(2)} and ${auction.maxBid.toFixed(2)} ETB.`);
+  const paymentRef = paymentId ? doc(userCollection(_uid, "payments"), paymentId) : null;
+  const paymentSnapshot = paymentRef ? await getDoc(paymentRef) : null;
+  if (auction.bidFee > 0 && (!paymentSnapshot?.exists() || paymentSnapshot.data()?.status !== "paid" || paymentSnapshot.data()?.used === true || numberValue(paymentSnapshot.data()?.amount) !== auction.bidFee || paymentSnapshot.data()?.auctionId !== auctionId)) {
+    throw new Error("An administrator-approved payment is required before bidding.");
+  }
   const existingBids = await getDocs(query(collection(firestore, "auctions", auctionId, "entries"), where("uid", "==", _uid), limit(auction.maxBidsPerUser)));
   if (existingBids.size >= auction.maxBidsPerUser) throw new Error(`You can submit up to ${auction.maxBidsPerUser} bids for this auction.`);
   const bidRef = doc(collection(firestore, "auctions", auctionId, "entries"));
@@ -288,6 +340,7 @@ export async function submitFirestoreBid(_uid: string, auctionId: string, paymen
   batch.set(bidRef, { uid: _uid, amount, paymentId: paymentId || null, createdAt: stamp });
   batch.set(userBidRef, { auctionId, amount, paymentId: paymentId || null, auctionTitle: auction.title, auctionImagePath: auction.imagePath, auctionStatus: auction.status, isWinningBid: false, createdAt: stamp });
   batch.update(auctionRef, { bidCount: (auction.bidCount ?? 0) + 1, updatedAt: stamp });
+  if (paymentRef) batch.update(paymentRef, { used: true, usedAt: stamp, usedBidId: bidRef.id });
   await batch.commit();
   return { bidId: bidRef.id, amount };
 }
@@ -304,7 +357,11 @@ export async function listUserReports(uid: string): Promise<ReportRecord[]> {
 }
 
 export async function submitUserReport(_uid: string, input: { category: ReportRecord["category"]; subject: string; details: string; targetType?: string | null; targetId?: string | null }) {
-  return submitSupportReportCall(input);
+  const subject = cleanText(input.subject, "Subject", 4, 160);
+  const details = cleanText(input.details, "Details", 20, 4000);
+  const reportRef = doc(collection(firestore, "reports"));
+  await setDoc(reportRef, { uid: _uid, category: input.category, subject, details, targetType: input.targetType?.trim().slice(0, 50) || null, targetId: input.targetId?.trim().slice(0, 128) || null, status: "open", adminReply: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  return { reportId: reportRef.id, status: "open" };
 }
 
 export async function listAdminAuctions(): Promise<AuctionRecord[]> {
@@ -400,7 +457,14 @@ export async function listAdminUsers(): Promise<UserRecord[]> {
   }).sort((left, right) => right.lastSignedIn.getTime() - left.lastSignedIn.getTime());
 }
 
-export async function updateFirestoreUserStatus(_actorUid: string, targetUid: string, status: "active" | "suspended") { return setUserStatusCall({ uid: targetUid, status }); }
+export async function updateFirestoreUserStatus(_actorUid: string, targetUid: string, status: "active" | "suspended") {
+  if (targetUid === _actorUid) throw new Error("You cannot suspend your own account.");
+  const target = await getDoc(userDocument(targetUid));
+  if (!target.exists()) throw new Error("User account not found.");
+  if (target.data()?.role === "admin") throw new Error("Administrator accounts cannot be suspended here.");
+  await updateDoc(userDocument(targetUid), { status, statusChangedBy: _actorUid, statusChangedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  return { uid: targetUid, status };
+}
 
 export async function listAdminReports(): Promise<ReportRecord[]> {
   const snapshot = await getDocs(query(collection(firestore, "reports"), orderBy("createdAt", "desc"), limit(200)));
@@ -427,7 +491,16 @@ export async function listAdminReports(): Promise<ReportRecord[]> {
 }
 
 export async function reviewFirestoreReport(_actorUid: string, reportId: string, status: ReportRecord["status"], adminNotes: string | null, adminReply: string | null = null) {
-  return reviewReportCall({ reportId, status, adminNotes, adminReply });
+  const reportRef = doc(firestore, "reports", reportId);
+  const report = await getDoc(reportRef);
+  if (!report.exists()) throw new Error("Report not found.");
+  const uid = String(report.data()?.uid ?? "");
+  const batch = writeBatch(firestore);
+  batch.update(reportRef, { status, adminReply: adminReply?.trim().slice(0, 2000) || null, reviewedBy: getCurrentUid(), reviewedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  batch.set(doc(firestore, "reports", reportId, "private", "review"), { adminNotes: adminNotes?.trim().slice(0, 2000) || null, updatedBy: getCurrentUid(), updatedAt: serverTimestamp() }, { merge: true });
+  if (uid) batch.set(doc(firestore, "users", uid, "notifications", `report-${reportId}`), { type: "report_update", titleKey: "notice.reportUpdate.title", bodyKey: "notice.reportUpdate.body", params: { subject: String(report.data()?.subject ?? "Report"), status }, createdAt: serverTimestamp(), readAt: null });
+  await batch.commit();
+  return { reportId, status };
 }
 
 export async function listAdminPayments(): Promise<PaymentRecord[]> {
@@ -439,7 +512,18 @@ export async function listAdminPayments(): Promise<PaymentRecord[]> {
 }
 
 export async function createManualPaymentRecord(_actorUid: string, input: { uid: string; auctionId: string; providerReference: string; status: "pending" | "paid" }) {
-  return recordManualPaymentCall(input);
+  const providerReference = cleanText(input.providerReference, "Payment reference", 3, 160);
+  const referenceRef = doc(firestore, "paymentReferences", await hashReference(providerReference));
+  const paymentRef = doc(collection(firestore, "users", input.uid, "payments"));
+  const [user, auction, duplicate] = await Promise.all([getDoc(userDocument(input.uid)), getDoc(doc(auctionsCollection, input.auctionId)), getDoc(referenceRef)]);
+  if (!user.exists() || !auction.exists()) throw new Error("Choose an existing bidder and auction.");
+  if (user.data()?.status === "suspended") throw new Error("Cannot record a payment for a suspended account.");
+  if (duplicate.exists()) throw new Error("That payment reference has already been recorded.");
+  const batch = writeBatch(firestore);
+  batch.set(paymentRef, { uid: input.uid, auctionId: input.auctionId, auctionTitle: String(auction.data()?.title ?? "Auction"), amount: numberValue(auction.data()?.bidFee), provider: "manual", providerReference, status: input.status, used: false, createdAt: serverTimestamp(), createdBy: _actorUid });
+  batch.set(referenceRef, { uid: input.uid, auctionId: input.auctionId, paymentId: paymentRef.id, createdAt: serverTimestamp() });
+  await batch.commit();
+  return { paymentId: paymentRef.id, status: input.status };
 }
 
 export async function listAdminOwnerApplications(): Promise<OwnerApplicationRecord[]> {
@@ -465,8 +549,35 @@ async function getUserSubcollectionSnapshots(users: readonly QueryDocumentSnapsh
   return snapshots;
 }
 
-export async function reviewOwner(uid: string, decision: "approve" | "reject", note = "") { return reviewOwnerApplicationCall({ uid, decision, note }); }
-export async function requestOwnerApplication(input: { businessName: string; city: string; contactPhone: string; description: string }) { return requestOwnerAccessCall(input); }
+export async function reviewOwner(uid: string, decision: "approve" | "reject", note = "") {
+  const applicationRef = doc(firestore, "ownerApplications", uid);
+  const profileRef = userDocument(uid);
+  const approved = decision === "approve";
+  await runTransaction(firestore, async (transaction) => {
+    const application = await transaction.get(applicationRef);
+    if (!application.exists() || application.data()?.status !== "pending") throw new Error("This application is no longer pending.");
+    transaction.update(applicationRef, { status: approved ? "approved" : "rejected", reviewNote: note.trim().slice(0, 1000) || null, reviewedBy: getCurrentUid(), reviewedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    transaction.set(profileRef, { role: approved ? "owner" : "user", ownerStatus: approved ? "approved" : "rejected", ownerApplicationStatus: approved ? "approved" : "rejected", updatedAt: serverTimestamp() }, { merge: true });
+    transaction.set(doc(firestore, "users", uid, "notifications", `owner-review-${Date.now()}`), { type: "owner_application", titleKey: approved ? "notice.ownerApproved.title" : "notice.ownerRejected.title", bodyKey: approved ? "notice.ownerApproved.body" : "notice.ownerRejected.body", params: { note: note.trim() }, createdAt: serverTimestamp(), readAt: null });
+  });
+  return { status: approved ? "approved" : "rejected", uid };
+}
+export async function requestOwnerApplication(input: { businessName: string; city: string; contactPhone: string; description: string }) {
+  const uid = getCurrentUid();
+  const applicationRef = doc(firestore, "ownerApplications", uid);
+  const profileRef = userDocument(uid);
+  const businessName = cleanText(input.businessName, "Business or seller name", 2, 120);
+  const city = cleanText(input.city, "City", 2, 100);
+  const contactPhone = cleanText(input.contactPhone, "Contact phone", 7, 40);
+  const description = cleanText(input.description, "Seller description", 20, 2000);
+  const existing = await getDoc(applicationRef);
+  if (existing.data()?.status === "pending") throw new Error("An owner application is already under review.");
+  await runTransaction(firestore, async (transaction) => {
+    transaction.set(applicationRef, { uid, businessName, city, contactPhone, description, status: "pending", submittedAt: serverTimestamp(), updatedAt: serverTimestamp() });
+    transaction.set(profileRef, { ownerApplicationStatus: "pending", updatedAt: serverTimestamp() }, { merge: true });
+  });
+  return { status: "pending" };
+}
 
 export async function getOwnerApplication(uid: string) {
   const [application, profile] = await Promise.all([getDoc(doc(firestore, "ownerApplications", uid)), getDoc(userDocument(uid))]);

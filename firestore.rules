@@ -24,9 +24,8 @@ service cloud.firestore {
         && request.resource.data.status == 'active'
         && request.resource.data.keys().hasOnly(['uid', 'name', 'email', 'phone', 'city', 'language', 'marketingOptIn', 'role', 'status', 'ownerStatus', 'ownerApplicationStatus', 'createdAt', 'updatedAt', 'lastSignedIn']));
       allow update: if admin()
-        ? request.resource.data.uid == resource.data.uid
-          && request.resource.data.role == resource.data.role
-          && request.resource.data.status == resource.data.status
+          ? request.resource.data.uid == resource.data.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role', 'status', 'ownerStatus', 'ownerApplicationStatus', 'updatedAt', 'statusChangedBy', 'statusChangedAt'])
         : ownActive(uid)
           && request.resource.data.uid == resource.data.uid
           && request.resource.data.role == resource.data.role
@@ -47,11 +46,24 @@ service cloud.firestore {
 
       match /payments/{paymentId} {
         allow read: if admin() || (signedIn() && request.auth.uid == uid);
-        allow create, update, delete: if false;
+        allow create: if admin()
+          || (ownActive(uid)
+          && request.resource.data.uid == uid
+          && request.resource.data.source == 'bidder_proof'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.used == false
+          && request.resource.data.amount is number
+          && request.resource.data.auctionId is string
+          && request.resource.data.createdAt == request.time);
+        allow update: if admin()
+          || (ownActive(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['used', 'usedAt', 'usedBidId'])
+            && resource.data.status == 'paid' && resource.data.used == false && request.resource.data.used == true);
+        allow delete: if false;
 
         match /proofs/{proofId} {
           allow read: if admin() || (ownActive(uid) && proofId == 'receipt');
-          allow create, update, delete: if false;
+          allow create: if ownActive(uid) && proofId == 'receipt' && request.resource.data.uid == uid && request.resource.data.paymentId == paymentId && request.resource.data.imageDataUrl is string && request.resource.data.createdAt == request.time;
+          allow update, delete: if false;
         }
       }
 
@@ -69,10 +81,11 @@ service cloud.firestore {
 
       match /notifications/{notificationId} {
         allow read: if admin() || (signedIn() && request.auth.uid == uid);
+        allow create: if admin() && request.resource.data.createdAt == request.time;
         allow update: if ownActive(uid)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readAt'])
           && request.resource.data.readAt == request.time;
-        allow create, delete: if false;
+        allow delete: if false;
       }
 
       match /devices/{deviceId} {
@@ -98,7 +111,9 @@ service cloud.firestore {
 
     match /ownerApplications/{uid} {
       allow read: if admin() || (signedIn() && request.auth.uid == uid);
-      allow create, update, delete: if false;
+      allow create: if ownActive(uid) && request.resource.data.uid == uid && request.resource.data.status == 'pending' && request.resource.data.keys().hasOnly(['uid', 'businessName', 'city', 'contactPhone', 'description', 'status', 'submittedAt', 'updatedAt']);
+      allow update: if admin() || (ownActive(uid) && resource.data.uid == uid && request.resource.data.uid == uid && request.resource.data.status == 'pending');
+      allow delete: if false;
     }
 
     match /products/{productId} {
@@ -154,10 +169,13 @@ service cloud.firestore {
 
     match /reports/{reportId} {
       allow read: if admin() || (signedIn() && resource.data.uid == request.auth.uid && activeUser(request.auth.uid));
-      allow create, update, delete: if false;
+      allow create: if signedIn() && activeUser(request.auth.uid) && request.resource.data.uid == request.auth.uid && request.resource.data.status == 'open' && request.resource.data.createdAt == request.time;
+      allow update: if admin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'adminReply', 'reviewedBy', 'reviewedAt', 'updatedAt']);
+      allow delete: if false;
       match /private/{documentId} {
         allow read: if admin();
-        allow write: if false;
+        allow create, update: if admin() && documentId == 'review';
+        allow delete: if false;
       }
     }
 
@@ -167,7 +185,9 @@ service cloud.firestore {
     }
 
     match /paymentReferences/{referenceId} {
-      allow read, write: if false;
+      allow read: if signedIn();
+      allow create: if admin() || (signedIn() && activeUser(request.auth.uid) && request.resource.data.uid == request.auth.uid && request.resource.data.createdAt == request.time);
+      allow update, delete: if false;
     }
     match /rateLimits/{uid} {
       allow read, write: if false;
