@@ -21,7 +21,7 @@ import {
   type QuerySnapshot,
 } from "firebase/firestore";
 import { auth, firestore } from "./firebase";
-import { calculateLowestUniqueBid } from "./auctionEngine";
+import { publishFirestoreAuctionResult } from "./firestoreResults";
 
 export type AccountProfile = { phone: string | null; city: string | null; language: "en" | "am"; marketingOptIn: boolean };
 export type SavedAuction = { id: string; auctionId: string; title: string; imagePath: string; endsAt: Date };
@@ -103,6 +103,14 @@ export type DeviceRecord = { id: string; label: string; userAgent: string; first
 export type OwnerApplicationRecord = { uid: string; businessName: string; city: string; contactPhone: string; description: string; status: "pending" | "approved" | "rejected"; submittedAt: Date; reviewNote: string | null; applicantName: string; applicantEmail: string | null };
 export type OwnerWinRecord = { id: string; auctionId: string; bidId: string; amount: number; title: string; imagePath: string; referenceCode: string; createdAt: Date };
 export type FirestoreAccountData = { profile: AccountProfile; bids: BidRecord[]; savedAuctions: SavedAuction[]; wins: OwnerWinRecord[]; notifications: NotificationRecord[]; devices: DeviceRecord[] };
+export type AdminUserDetails = {
+  user: UserRecord;
+  profile: AccountProfile & { ownerStatus: string | null; ownerApplicationStatus: string | null; statusChangedBy: string | null; statusChangedAt: Date | null };
+  account: FirestoreAccountData;
+  payments: PaymentRecord[];
+  ownerApplication: OwnerApplicationRecord | null;
+  reports: ReportRecord[];
+};
 
 const usersCollection = collection(firestore, "users");
 const auctionsCollection = collection(firestore, "auctions");
@@ -430,20 +438,10 @@ export async function publishFirestoreAuction(_actorUid: string, auctionId: stri
   return setAuctionStatus(auctionId, startsAt.getTime() <= Date.now() ? "live" : "published");
 }
 export async function closeAuctionForEditing(_actorUid: string, auctionId: string) { return setAuctionStatus(auctionId, "closed"); }
-export async function closeFirestoreAuction(_actorUid: string, auctionId: string) {
-  const entries = await getDocs(collection(firestore, "auctions", auctionId, "entries"));
-  const winner = calculateLowestUniqueBid(entries.docs.map((entry) => ({ id: entry.id, amount: numberValue(entry.data().amount) })));
-  const auctionSnapshot = await getDoc(doc(auctionsCollection, auctionId));
-  if (!auctionSnapshot.exists()) throw new Error("Auction not found.");
-  const auction = readAuction(auctionSnapshot as QueryDocumentSnapshot<DocumentData>);
-  const resultRef = doc(resultsCollection, auctionId);
-  const resultType = winner ? "winner" : "no_unique_bid";
-  const referenceCode = `LOCAL-${auctionId.slice(0, 8).toUpperCase()}`;
-  const batch = writeBatch(firestore);
-  batch.set(resultRef, { auctionId, title: auction.title, category: auction.category, imagePath: auction.imagePath, resultType, winningAmount: winner?.amount ?? null, winnerName: winner ? "Winner" : "No winner", validBidCount: entries.size, referenceCode, publishedAt: serverTimestamp() });
-  batch.update(doc(auctionsCollection, auctionId), { status: "completed", updatedAt: serverTimestamp() });
-  await batch.commit();
-  return { resultType, referenceCode, winningAmount: winner?.amount ?? null, validBidCount: entries.size };
+export async function closeFirestoreAuction(actorUid: string, auctionId: string) {
+  const signedInUid = auth.currentUser?.uid;
+  if (!signedInUid || signedInUid !== actorUid) throw new Error("Sign in again before publishing the result.");
+  return publishFirestoreAuctionResult(firestore, signedInUid, auctionId);
 }
 
 export async function listAdminUsers(): Promise<UserRecord[]> {
@@ -455,6 +453,64 @@ export async function listAdminUsers(): Promise<UserRecord[]> {
       createdAt: toDate(data.createdAt), lastSignedIn: toDate(data.lastSignedIn ?? data.updatedAt),
     };
   }).sort((left, right) => right.lastSignedIn.getTime() - left.lastSignedIn.getTime());
+}
+
+export async function getAdminUserDetails(uid: string): Promise<AdminUserDetails> {
+  const [profileSnapshot, account, payments, applicationSnapshot, reportsSnapshot] = await Promise.all([
+    getDoc(userDocument(uid)), getAccountData(uid), listUserPayments(uid),
+    getDoc(doc(firestore, "ownerApplications", uid)),
+    getDocs(query(collection(firestore, "reports"), where("uid", "==", uid), limit(100))),
+  ]);
+  if (!profileSnapshot.exists()) throw new Error("User profile no longer exists.");
+
+  const data = profileSnapshot.data();
+  const user: UserRecord = {
+    id: uid, uid, name: String(data.name ?? "Cherta member"),
+    email: typeof data.email === "string" ? data.email : null,
+    role: (data.role === "admin" ? "admin" : data.role === "owner" ? "owner" : "user") as UserRecord["role"],
+    status: data.status === "suspended" ? "suspended" : "active",
+    createdAt: toDate(data.createdAt), lastSignedIn: toDate(data.lastSignedIn ?? data.updatedAt),
+  };
+  const applicationData = applicationSnapshot.data();
+  const ownerApplication: OwnerApplicationRecord | null = applicationSnapshot.exists() ? {
+    uid, businessName: String(applicationData?.businessName ?? ""), city: String(applicationData?.city ?? ""),
+    contactPhone: String(applicationData?.contactPhone ?? ""), description: String(applicationData?.description ?? ""),
+    status: applicationData?.status === "approved" || applicationData?.status === "rejected" ? applicationData.status : "pending",
+    submittedAt: toDate(applicationData?.submittedAt),
+    reviewNote: typeof applicationData?.reviewNote === "string" ? applicationData.reviewNote : null,
+    applicantName: user.name, applicantEmail: user.email,
+  } : null;
+  const reports = await Promise.all(reportsSnapshot.docs.map(async (item): Promise<ReportRecord> => {
+    const report = item.data();
+    const reviewSnapshot = await getDoc(doc(firestore, "reports", item.id, "private", "review"));
+    const review = reviewSnapshot.data();
+    const categories: ReportRecord["category"][] = ["account", "auction", "payment", "safety", "other"];
+    const statuses: ReportRecord["status"][] = ["open", "reviewing", "resolved", "dismissed"];
+    return {
+      id: item.id, uid, reporterName: user.name, reporterEmail: user.email,
+      category: categories.includes(report.category) ? report.category : "other",
+      subject: String(report.subject ?? "Report"), details: String(report.details ?? ""),
+      targetType: typeof report.targetType === "string" ? report.targetType : null,
+      targetId: typeof report.targetId === "string" ? report.targetId : null,
+      status: statuses.includes(report.status) ? report.status : "open",
+      adminNotes: typeof review?.adminNotes === "string" ? review.adminNotes : null,
+      adminReply: typeof report.adminReply === "string" ? report.adminReply : null,
+      createdAt: toDate(report.createdAt),
+    };
+  }));
+
+  return {
+    user,
+    profile: {
+      ...account.profile,
+      ownerStatus: typeof data.ownerStatus === "string" ? data.ownerStatus : null,
+      ownerApplicationStatus: typeof data.ownerApplicationStatus === "string" ? data.ownerApplicationStatus : null,
+      statusChangedBy: typeof data.statusChangedBy === "string" ? data.statusChangedBy : null,
+      statusChangedAt: data.statusChangedAt ? toDate(data.statusChangedAt) : null,
+    },
+    account, payments, ownerApplication,
+    reports: reports.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime()),
+  };
 }
 
 export async function updateFirestoreUserStatus(_actorUid: string, targetUid: string, status: "active" | "suspended") {

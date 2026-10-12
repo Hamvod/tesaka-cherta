@@ -14,6 +14,7 @@ service cloud.firestore {
     }
     function ownActive(uid) { return signedIn() && request.auth.uid == uid && activeUser(uid); }
     function auctionPath(auctionId) { return /databases/$(database)/documents/auctions/$(auctionId); }
+    function resultPath(auctionId) { return /databases/$(database)/documents/results/$(auctionId); }
     function publicAuctionStatus(status) { return status in ['published', 'live', 'completed']; }
 
     match /users/{uid} {
@@ -70,13 +71,26 @@ service cloud.firestore {
       match /bids/{bidId} {
         allow read: if admin() || (signedIn() && request.auth.uid == uid);
         allow create: if ownActive(uid) && request.resource.data.auctionId is string && request.resource.data.amount is number && request.resource.data.createdAt == request.time;
-        allow update: if ownActive(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isWinningBid', 'auctionStatus']);
+        allow update: if (admin()
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isWinningBid', 'auctionStatus'])
+            && request.resource.data.isWinningBid == true
+            && request.resource.data.auctionStatus == 'completed'
+            && getAfter(resultPath(request.resource.data.auctionId)).data.resultType == 'winner')
+          || (ownActive(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isWinningBid', 'auctionStatus']));
         allow delete: if false;
       }
 
       match /wins/{auctionId} {
         allow read: if admin() || (signedIn() && request.auth.uid == uid);
-        allow write: if false;
+        allow create: if admin()
+          && request.resource.data.keys().hasOnly(['auctionId', 'bidId', 'amount', 'title', 'imagePath', 'referenceCode', 'resultHash', 'createdAt'])
+          && request.resource.data.auctionId == auctionId
+          && request.resource.data.bidId is string
+          && request.resource.data.amount is number
+          && request.resource.data.createdAt == request.time
+          && getAfter(resultPath(auctionId)).data.resultType == 'winner'
+          && getAfter(resultPath(auctionId)).data.resultHash == request.resource.data.resultHash;
+        allow update, delete: if false;
       }
 
       match /notifications/{notificationId} {
@@ -164,7 +178,28 @@ service cloud.firestore {
 
     match /results/{auctionId} {
       allow read: if true;
-      allow create, update, delete: if false;
+      allow create: if admin()
+        && request.resource.data.keys().hasOnly(['auctionId', 'title', 'category', 'imagePath', 'resultType', 'winningAmount', 'winnerName', 'maskedPhone', 'validBidCount', 'referenceCode', 'resultHash', 'publishedAt'])
+        && request.resource.data.auctionId == auctionId
+        && request.resource.data.resultType in ['winner', 'no_unique_bid']
+        && request.resource.data.title is string
+        && request.resource.data.category is string
+        && request.resource.data.imagePath is string
+        && request.resource.data.winnerName is string
+        && request.resource.data.validBidCount is int
+        && request.resource.data.validBidCount >= 0
+        && request.resource.data.referenceCode is string
+        && request.resource.data.referenceCode.size() <= 64
+        && request.resource.data.resultHash is string
+        && request.resource.data.resultHash.matches('^[a-f0-9]{64}$')
+        && request.resource.data.publishedAt == request.time
+        && exists(auctionPath(auctionId))
+        && get(auctionPath(auctionId)).data.status in ['live', 'published']
+        && get(auctionPath(auctionId)).data.endsAt <= request.time
+        && getAfter(auctionPath(auctionId)).data.status == 'completed'
+        && ((request.resource.data.resultType == 'winner' && request.resource.data.winningAmount is number)
+          || (request.resource.data.resultType == 'no_unique_bid' && request.resource.data.winningAmount == null));
+      allow update, delete: if false;
     }
 
     match /reports/{reportId} {
@@ -181,7 +216,16 @@ service cloud.firestore {
 
     match /auditLogs/{eventId} {
       allow read: if admin();
-      allow create, update, delete: if false;
+      allow create: if admin()
+        && request.resource.data.keys().hasOnly(['actorUid', 'action', 'entityType', 'entityId', 'resultHash', 'referenceCode', 'createdAt'])
+        && request.resource.data.actorUid == request.auth.uid
+        && request.resource.data.action == 'auction.result_published'
+        && request.resource.data.entityType == 'auction'
+        && request.resource.data.entityId is string
+        && request.resource.data.createdAt == request.time
+        && getAfter(resultPath(request.resource.data.entityId)).data.resultHash == request.resource.data.resultHash
+        && getAfter(resultPath(request.resource.data.entityId)).data.referenceCode == request.resource.data.referenceCode;
+      allow update, delete: if false;
     }
 
     match /paymentReferences/{referenceId} {

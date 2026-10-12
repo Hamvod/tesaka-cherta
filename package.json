@@ -9,7 +9,8 @@
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "test": "vitest run",
-    "admin:seed": "tsx scripts/seed-admin.ts"
+    "admin:seed": "tsx scripts/seed-admin.ts",
+    "test:winner-emulator": "npx --yes firebase-tools emulators:exec --project demo-tesaka-cherta --only auth,firestore \"pnpm exec tsx scripts/e2e/winner-publish-emulator.ts\""
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
