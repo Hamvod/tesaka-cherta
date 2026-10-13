@@ -5,6 +5,8 @@ import { onSchedule } from "firebase-functions/v2/scheduler";
 import { CALLABLE_OPTIONS, db, finiteNumber, millis, millisFromFirestore, requireActive, requireAdmin, requireCaller, requireOwnerOrAdmin, requireUser, serverTimestamp, text, validateFirestoreJpeg, writeAuditInTransaction } from "./common";
 import { parseAmountCents, selectLowestUniqueAmount } from "./domain";
 
+const MAX_BIDS_PER_USER = 10_000;
+
 function centsFromInput(value: unknown): number {
   try {
     return parseAmountCents(value);
@@ -28,7 +30,7 @@ export const createAuction = onCall(CALLABLE_OPTIONS, async (request) => {
   const bidFee = finiteNumber(data.bidFee, "Bid fee", 0, 1000000);
   const minBid = finiteNumber(data.minBid, "Minimum bid", 0.01, 10000000);
   const maxBid = finiteNumber(data.maxBid, "Maximum bid", minBid, 10000000);
-  const maxBidsPerUser = finiteNumber(data.maxBidsPerUser, "Maximum bids per user", 1, 100);
+  const maxBidsPerUser = finiteNumber(data.maxBidsPerUser, "Maximum bids per user", 1, MAX_BIDS_PER_USER);
   if (!Number.isInteger(maxBidsPerUser)) throw new HttpsError("invalid-argument", "Maximum bids per user must be a whole number.");
   const startsAtMs = millis(data.startsAtMs, "Opening time");
   const endsAtMs = millis(data.endsAtMs, "Closing time");
@@ -188,7 +190,7 @@ export const updateAuction = onCall(CALLABLE_OPTIONS, async (request) => {
   const bidFee = finiteNumber(data.bidFee, "Bid fee", 0, 1000000);
   const minBid = finiteNumber(data.minBid, "Minimum bid", 0.01, 10000000);
   const maxBid = finiteNumber(data.maxBid, "Maximum bid", minBid, 10000000);
-  const maxBidsPerUser = finiteNumber(data.maxBidsPerUser, "Maximum bids per user", 1, 100);
+  const maxBidsPerUser = finiteNumber(data.maxBidsPerUser, "Maximum bids per user", 1, MAX_BIDS_PER_USER);
   if (!Number.isInteger(maxBidsPerUser)) throw new HttpsError("invalid-argument", "Maximum bids per user must be a whole number.");
   const startsAtMs = millis(data.startsAtMs, "Opening time");
   const endsAtMs = millis(data.endsAtMs, "Closing time");

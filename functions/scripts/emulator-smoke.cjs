@@ -91,12 +91,18 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
     sellerName: "Emulator Seller Shop", imageDataUrl: "data:image/jpeg;base64,SGVsbG8=", bidFee: 1, minBid: 0.1, maxBid: 100,
     maxBidsPerUser: 5, startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
   }, "INVALID_ARGUMENT");
+  await expectCallableError("createAuction", ownerIdToken, {
+    title: "Too many bids listing", category: "Test", description: "This listing tests the upper limit for per-user bids.",
+    sellerName: "Emulator Seller Shop", imageDataUrl: testJpeg, bidFee: 1, minBid: 0.1, maxBid: 100,
+    maxBidsPerUser: 10_001, startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
+  }, "INVALID_ARGUMENT");
   const ownerAuction = await callFunction("createAuction", ownerIdToken, {
     title: "Owner emulator listing", category: "Test", description: "A seller-created product listing for local emulator validation.",
     sellerName: "Emulator Seller Shop", imageDataUrl: testJpeg, bidFee: 1, minBid: 0.1, maxBid: 100,
-    maxBidsPerUser: 5, startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
+    maxBidsPerUser: 10_000, startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
   });
   assert.equal(ownerAuction.status, "draft");
+  assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("maxBidsPerUser"), 10_000);
   await callFunction("submitAuctionForReview", ownerIdToken, { auctionId: ownerAuction.auctionId });
   const listingReview = await callFunction("reviewAuction", admin.idToken, { auctionId: ownerAuction.auctionId, decision: "approve" });
   assert.equal(listingReview.status, "approve");
@@ -108,20 +114,27 @@ async function expectCallableError(name, idToken, data, expectedStatus) {
   assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, bidders[0].idToken)).ok, true, "A bidder should read a public Firestore auction image");
   assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, ownerIdToken)).ok, true, "The listing owner should read its Firestore image");
   assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, admin.idToken)).ok, true, "Admin should read Firestore auction images");
-  assert.equal((await deleteDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, ownerIdToken)).status, 403, "Browser writes to auction image documents must be denied");
+  assert.equal((await deleteDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, bidders[0].idToken)).status, 403, "A different bidder must not delete another owner's auction image");
   await callFunction("closeAuctionForEditing", admin.idToken, { auctionId: ownerAuction.auctionId });
   assert.equal((await db.doc(`auctions/${ownerAuction.auctionId}`).get()).get("status"), "closed");
   assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, bidders[0].idToken)).status, 403, "Draft/closed listing images must not be public");
   assert.equal((await readDocumentAsUser(`auctionImages/${ownerAuction.auctionId}`, ownerIdToken)).ok, true, "The listing owner retains access while editing");
+  await expectCallableError("updateAuction", admin.idToken, {
+    auctionId: ownerAuction.auctionId, title: "Invalid high bid limit", category: "Test",
+    description: "This update tests that the upper limit is enforced by the trusted callable.", sellerName: "Emulator Seller Shop",
+    bidFee: 1, minBid: 0.1, maxBid: 100, maxBidsPerUser: 10_001,
+    startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
+  }, "INVALID_ARGUMENT");
   const editedAuction = await callFunction("updateAuction", admin.idToken, {
     auctionId: ownerAuction.auctionId, title: "Edited owner emulator listing", category: "Test",
     description: "Edited using the trusted callable, retaining the already uploaded image.", sellerName: "Emulator Seller Shop",
-    bidFee: 1, minBid: 0.1, maxBid: 100, maxBidsPerUser: 5,
+    bidFee: 1, minBid: 0.1, maxBid: 100, maxBidsPerUser: 10_000,
     startsAtMs: Date.now() + 60_000, endsAtMs: Date.now() + 3_600_000,
   });
   assert.equal(editedAuction.status, "draft");
   const editedDoc = await db.doc(`auctions/${ownerAuction.auctionId}`).get();
   assert.equal(editedDoc.get("title"), "Edited owner emulator listing");
+  assert.equal(editedDoc.get("maxBidsPerUser"), 10_000);
   assert.equal(editedDoc.get("imagePath"), `firestore-image:${ownerAuction.auctionId}`, "Editing should retain the existing Firestore image when no replacement is selected");
   assert.equal((await db.doc(`auctionImages/${ownerAuction.auctionId}`).get()).get("imageDataUrl"), testJpeg, "Image document should remain separate from listing metadata");
   assert.equal((await db.doc(`products/${ownerAuction.auctionId}`).get()).get("status"), "draft");
